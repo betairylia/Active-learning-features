@@ -144,7 +144,7 @@ def ActiveLearningDataModuleWrapper(base: pl.LightningDataModule):
                     "The `probabilities` and `indices` are mutually exclusive, pass only of one them."
                 )
             if probabilities is not None:
-                probabilities = torch.cat([p[0].unsqueeze(0) for p in probabilities], dim=0)
+                probabilities = torch.cat([p for p in probabilities], dim=0)
                 uncertainties = self.heuristic.get_uncertainties(probabilities)
                 indices = np.argsort(uncertainties)
                 if self._dataset is not None:

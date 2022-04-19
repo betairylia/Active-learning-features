@@ -70,16 +70,18 @@ class ndrop_ActiveLearningLoop(ActiveLearningLoop):
             self.fit_loop.run()
 
         if self.trainer.datamodule.has_test:
+            
             self._reset_testing()
             metrics = self.trainer.test_loop.run()
-            if metrics:
-                self.trainer.logger.log_metrics(metrics[0], step = self.progress.current.completed) # Use current step for AL
             
-            # Also log current number of labelled samples
-            self.trainer.logger.log_metrics(
-                {'labelled': self.trainer.datamodule._dataset.n_labelled}, 
-                step = self.progress.current.completed
-            )
+            if metrics:
+                metrics_AL = metrics[0]
+                metrics_AL = {('AL/%s'%k): metrics_AL[k] for k in metrics_AL}
+                
+                # Also log current number of labelled samples
+                metrics_AL['AL/labelled'] = self.trainer.datamodule._dataset.n_labelled
+                self.trainer.logger.log_metrics(metrics_AL, step = self.progress.current.completed) # Use current step for AL
+                # self.trainer.logger.log_metrics(metrics_AL) # Use current step for AL
 
         if self.trainer.datamodule.has_unlabelled_data:
             self._reset_predicting()
@@ -90,3 +92,49 @@ class ndrop_ActiveLearningLoop(ActiveLearningLoop):
 
         self._reset_fitting()
         self.progress.increment_processed()
+        
+# TODO: Move to other place
+def ReweightFeatures(features, weight):
+    
+    '''
+    Reweights features accroading to weight.
+    features: [N_batches (Nb), dim]
+    weight:   [dim,]
+    '''
+    
+    # Apply weight sign and sort features and abs weights
+    features_signed = features * (torch.sign(weights))
+    features_sorted, features_order = torch.sort(features_signed)
+    weights_sorted = torch.abs(weights)[features_order] # => [Nb, dim]
+    
+    # Collect prefix-sum of weight vectors, with an appended zero in front
+    weights_cumsum = torch.cumsum(torch.abs(weights_sorted), dim = 1)
+    weights_cumsum = torch.cat(
+        [
+            torch.zeros((weights_cumsum.shape[0], 1), device = weights_cumsum.device), 
+            weights_cumsum
+        ],
+        dim = 1
+    )
+    
+    # Create uniform-sampled points for reweighting
+    weights_total = weights_cumsum[:, -1]
+    uniformed = torch.linspace(start = 0, end = weights_total[0], steps = weights.shape[0])#.unsqueeze(0) * weights_total.unsqueeze(1)
+    uniformed = uniformed.unsqueeze(0).repeat(weights_cumsum.shape[0], 1)
+
+    # Perform binary search to find interpolation ends
+    searched_results = torch.searchsorted(weights_cumsum, uniformed)
+    searched_results[:, 0] = 1 # Remove first 0's 
+    
+    # Linear interpolation: starts[ <------------ interp --> ] ends
+    starts = torch.gather(features_sorted, -1, searched_results - 1)
+    ends = torch.gather(features_sorted, -1, torch.minimum(searched_results, torch.LongTensor([features_sorted.shape[-1] - 1], device = features_sorted.device)))
+
+    # Linear interpolation: obtain interp from both weight ends
+    weights_s = torch.gather(weights_cumsum, -1, searched_results - 1)
+    weights_e = torch.gather(weights_cumsum, -1, searched_results)
+    interp = (uniformed - weights_s) / (weights_e - weights_s)
+    
+    # Do the interpolation
+    result = starts + (ends - starts) * interp
+    return result

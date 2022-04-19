@@ -16,112 +16,69 @@ from torch import nn
 from torch.nn import functional as F
 from torchmetrics import Accuracy
 
+import torchvision
 from torchvision import datasets
 from torchvision.transforms import transforms
 
 from functools import partial
 
 from plBaaLData import ActiveLearningDataModuleWrapper
-from pl_bolts.datamodules import CIFAR10DataModule
+from pl_bolts.datamodules import MNISTDataModule, CIFAR10DataModule
+
+import pytorch_lightning as pl
+
+from argparse import ArgumentParser
+from utils import *
+
+from pytorch_lightning.loggers import WandbLogger
 
 #################################################
 
-IMG_SIZE = 32
-# https://lightning-flash.readthedocs.io/en/latest/reference/image_classification.html#custom-transformations
-
-# train_transforms = transforms.Compose(
-#     [
-#         transforms.Resize((IMG_SIZE, IMG_SIZE)),
-#         transforms.RandomHorizontalFlip(),
-#         transforms.RandomRotation(30),
-#         transforms.ToTensor(),
-#         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-#     ]
-# )
-# test_transforms = transforms.Compose(
-#     [
-#         transforms.Resize((IMG_SIZE, IMG_SIZE)),
-#         transforms.ToTensor(),
-#         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-#     ]
-# )
+IMG_SIZE = 28
 
 class DataModule_(ImageClassificationData):
     @property
     def num_classes(self):
         return 10
 
-def get_data_module(heuristic, data_path):
-    # train_set = datasets.CIFAR10(data_path, train=True, download=True)
-    # test_set = datasets.CIFAR10(data_path, train=False, download=True)
-    # dm = DataModule_.from_datasets(
-    #     train_dataset=train_set,
-    #     test_dataset=test_set,
-    #     # train_transform=train_transforms,
-    #     # test_transform=test_transforms,
-    #     # Do not forget to set `predict_transform`,
-    #     # this is what we will use for uncertainty estimation!
-    #     # predict_transform=test_transforms,
-    #     transform_kwargs=dict(image_size=(32, 32)),
-    #     batch_size=64,
-    # )
-    # active_dm = ActiveLearningDataModule(
-    #     dm,
-    #     heuristic=get_heuristic(heuristic),
-    #     initial_num_labels=1024,
-    #     query_size=100,
-    #     val_split=0.0,
-    # )
-    # assert active_dm.has_test, "No test set?"
-    # return active_dm
-    
-    active_dm = ActiveLearningDataModuleWrapper(CIFAR10DataModule)(
+def get_data_module(heuristic, data_path):    
+    active_dm = ActiveLearningDataModuleWrapper(MNISTDataModule)(
         data_dir = "./data",
-        
+        num_workers = 16,
+
         heuristic=get_heuristic(heuristic),
-        initial_num_labels=1024,
-        query_size=100,
+        initial_num_labels=32,
+        query_size=16,
         val_split=0.01
     )
     return active_dm
 
 #################################################################
 
-def get_model(dm):
-    loss_fn = nn.CrossEntropyLoss()
-    head = nn.Sequential(
-        nn.Linear(512, 512),
-        nn.ReLU(True),
-        nn.Dropout(),
-        nn.Linear(512, 512),
-        nn.ReLU(True),
-        nn.Dropout(),
-        nn.Linear(512, dm.num_classes),
-    )
-    LR = 0.001
-    model = ImageClassifier(
-        num_classes=dm.num_classes,
-        head=head,
-        backbone="vgg16",
-        pretrained=True,
-        loss_fn=loss_fn,
-        optimizer=partial(torch.optim.SGD, momentum=0.9, weight_decay=5e-4),
-        learning_rate=LR,
-        # serializer=Logits(),  # Note the serializer to Logits to be able to estimate uncertainty.
-    )
-    model.output = LogitsOutput()
-    return model
-
-#################################################################
-
 class SimpleModel(LightningModule):
     def __init__(self):
         super().__init__()
-        self.l1 = torch.nn.Linear(32 * 32 * 3, 10)
+        
+        # Trivial linear
+        self.net = torch.nn.Sequential(
+            torch.nn.Linear(28 * 28 * 1, 8192),
+            torch.nn.ReLU(),
+            torch.nn.Dropout(),
+            torch.nn.Linear(8192, 10)
+        )
+
+        # https://pytorchlightning.github.io/lightning-tutorials/notebooks/lightning_examples/cifar10-baseline.html
+        # resnet = torchvision.models.resnet18(pretrained = False, num_classes = 10)
+        # resnet.conv1 = nn.Conv2d(3, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+        # resnet.maxpool = nn.Identity()
+        # self.l1 = resnet
+        
         self.accuracy = Accuracy()
 
     def forward(self, x):
-        return torch.relu(self.l1(x.view(x.size(0), -1)))
+        # return torch.relu(self.l1(x.view(x.size(0), -1)))
+        return self.net(x.view(x.size(0), -1))
+        # return self.l1(x)
 
     def training_step(self, batch, batch_nb):
         x, y = batch
@@ -136,8 +93,8 @@ class SimpleModel(LightningModule):
         self.accuracy(preds, y)
 
         # Calling self.log will surface up scalars for you in TensorBoard
-        self.log("val_loss", loss, prog_bar=True)
-        self.log("val_acc", self.accuracy, prog_bar=True)
+        self.log("val_loss", loss, prog_bar=False)
+        self.log("val_acc", self.accuracy, prog_bar=False)
         return loss
 
     def test_step(self, batch, batch_idx):
@@ -150,35 +107,81 @@ class SimpleModel(LightningModule):
         return self(x)
 
     def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=0.001)
+        return torch.optim.AdamW(self.parameters())
 
 #################################################################
         
-active_dm = get_data_module('random', './data')
-
-# Init our model
-model = SimpleModel()
-# model = get_model(active_dm)
-
-aloop = ndrop_ActiveLearningLoop(
-    label_epoch_frequency = 1,
-    inference_iteration = 1
-)
-
-# Initialize a trainer
-trainer = Trainer(
-    gpus=1,
-    max_epochs=10,
-    progress_bar_refresh_rate=20,
+def main(hparams):
     
-    limit_val_batches = 0.0
-)
+    seed = hparams.seed * (hparams.runid + 1)
+    pl.seed_everything(seed)
+    
+    active_dm = get_data_module(hparams.heuristic, './data')
 
-aloop.connect(trainer.fit_loop)
-trainer.fit_loop = aloop
+    # Init our model
+    model = SimpleModel()
+    # model = get_model(active_dm)
 
-# Train the model ⚡
-trainer.fit(
-    model, 
-    datamodule = active_dm
-)
+    aloop = ndrop_ActiveLearningLoop(
+        label_epoch_frequency = hparams.epochs_per_query,
+        inference_iteration = hparams.inference_iteration
+    )
+
+    wbgroup = GetArgsStr(hparams)
+    if wbgroup is None:
+        wandb_logger = WandbLogger(
+            project="AL-features",
+            config = vars(hparams)
+        )
+    else:
+        wandb_logger = WandbLogger(
+            project="AL-features",
+            config = vars(hparams),
+            group = wbgroup
+        )
+
+    # Initialize a trainer
+    trainer = Trainer(
+        gpus=hparams.gpus,
+        max_epochs=62, # 1024 labels in total
+        progress_bar_refresh_rate=20,
+
+        limit_val_batches = 0.0,
+
+        logger = wandb_logger
+    )
+
+    aloop.connect(trainer.fit_loop)
+    trainer.fit_loop = aloop
+
+    # Train the model ⚡
+    trainer.fit(
+        model, 
+        datamodule = active_dm
+    )
+
+if __name__ == "__main__":
+    
+    # TODO: Use Lightning integration
+    parent_parser = ArgumentParser()
+    
+    parent_parser = Trainer.add_argparse_args(parent_parser)
+    
+    parser = parent_parser.add_argument_group("Model Hyper-parameters")
+    
+    parser = parent_parser.add_argument_group("Active Learning related")
+    parser.add_argument("--heuristic", type=str, default="random")
+    parser.add_argument("--epochs_per_query", type=int, default=25)
+    parser.add_argument("--inference_iteration", type=int, default=20)
+    
+    parser = parent_parser.add_argument_group("Run metadata / WandB sweeps")
+    parser.add_argument('--keyargs', type=str, default="", help='Key variables in HP tune, splitted in commas')
+    parser.add_argument('--aaarunid', type=int, default=0, help='Run ID.')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed. will be multiplied with runid+1 to ensure different RNGs for different runs.')
+    
+    args = parent_parser.parse_args()
+    args.runid = args.aaarunid
+    del(args.aaarunid)
+
+    main(args)
+    
