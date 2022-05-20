@@ -150,7 +150,7 @@ def main(hparams):
 
     # Initialize a trainer
     trainer = Trainer(
-        gpus=hparams.gpus,
+        gpus=1,
         max_epochs=62, # 1024 labels in total
         progress_bar_refresh_rate=20,
 
