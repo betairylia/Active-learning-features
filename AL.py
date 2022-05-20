@@ -48,7 +48,7 @@ def get_data_module(heuristic, data_path):
 
         heuristic=get_heuristic_with_advanced(heuristic),
         initial_num_labels=32,
-        query_size=16,
+        query_size=32,
         val_split=0.01
     )
     return active_dm
