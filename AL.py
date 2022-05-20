@@ -6,7 +6,7 @@ from flash.image import ImageClassifier, ImageClassificationData
 from flash.core.classification import LogitsOutput
 
 from baal.active.dataset import ActiveLearningDataset
-from baal.active import get_heuristic
+from AdvancedHeuristics import get_heuristic_with_advanced
 
 import os
 
@@ -46,7 +46,7 @@ def get_data_module(heuristic, data_path):
         data_dir = "./data",
         num_workers = 16,
 
-        heuristic=get_heuristic(heuristic),
+        heuristic=get_heuristic_with_advanced(heuristic),
         initial_num_labels=32,
         query_size=16,
         val_split=0.01
@@ -61,11 +61,13 @@ class SimpleModel(LightningModule):
         
         # Trivial linear
         self.net = torch.nn.Sequential(
+            torch.nn.Flatten(),
             torch.nn.Linear(28 * 28 * 1, 8192),
             torch.nn.ReLU(),
             torch.nn.Dropout(),
-            torch.nn.Linear(8192, 10)
         )
+        
+        self.head = torch.nn.Linear(8192, 10)
 
         # https://pytorchlightning.github.io/lightning-tutorials/notebooks/lightning_examples/cifar10-baseline.html
         # resnet = torchvision.models.resnet18(pretrained = False, num_classes = 10)
@@ -77,7 +79,7 @@ class SimpleModel(LightningModule):
 
     def forward(self, x):
         # return torch.relu(self.l1(x.view(x.size(0), -1)))
-        return self.net(x.view(x.size(0), -1))
+        return self.head(self.net(x))
         # return self.l1(x)
 
     def training_step(self, batch, batch_nb):
@@ -105,6 +107,12 @@ class SimpleModel(LightningModule):
         # Here we just reuse the validation_step for predicting
         x, y = batch
         return self(x)
+    
+    def query_step(self, batch, batch_idx):
+        x, y = batch
+        feat = self.net(x)
+        logits = self.head(feat)
+        return logits, feat, self.head
 
     def configure_optimizers(self):
         return torch.optim.AdamW(self.parameters())

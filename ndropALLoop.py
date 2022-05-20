@@ -39,13 +39,25 @@ class ndrop_InferenceMCDropoutTask(flash.Task):
         self.inference_iteration = inference_iteration
 
     def predict_step(self, batch, batch_idx, dataloader_idx: int = 0):
+        
+        net = None
+        
         with torch.no_grad():
+            
             out = []
+            fin = []
+            
             for _ in range(self.inference_iteration):
-                out.append(self.parent_module.predict_step(batch, batch_idx))
+                (logits, features, net) = self.parent_module.query_step(batch, batch_idx)
+                out.append(logits)
+                fin.append(features)
 
         # BaaL expects a shape [num_samples, num_classes, num_iterations]
-        return torch.stack(out).permute((1, 2, 0))
+        return (
+            torch.stack(out).permute((1, 2, 0)), # [N_sample, dim, N_iter]
+            torch.stack(fin).permute((1, 2, 0)), # [N_sample, dim, N_iter]
+            net
+        )
     
 class ndrop_ActiveLearningLoop(ActiveLearningLoop):
     
@@ -85,8 +97,10 @@ class ndrop_ActiveLearningLoop(ActiveLearningLoop):
 
         if self.trainer.datamodule.has_unlabelled_data:
             self._reset_predicting()
-            probabilities = self.trainer.predict_loop.run()
-            self.trainer.datamodule.label(probabilities=probabilities)
+            evidences = self.trainer.predict_loop.run()
+            self.trainer.datamodule.label(
+                evidences=evidences
+            )
         else:
             raise StopIteration
 

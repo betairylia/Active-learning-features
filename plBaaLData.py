@@ -28,6 +28,7 @@ from torch.utils.data import DataLoader, Dataset, random_split
 
 from baal.active.dataset import ActiveLearningDataset
 from baal.active.heuristics import AbstractHeuristic, BALD
+from AdvancedHeuristics import AdvancedAbstractHeuristic
 
 from functools import partial
 import copy
@@ -138,17 +139,31 @@ def ActiveLearningDataModuleWrapper(base: pl.LightningDataModule):
                 self.train_dataloader()
             return self._dataset.n_unlabelled > 0
 
-        def label(self, probabilities: List[torch.Tensor] = None, indices=None):
-            if probabilities is not None and indices:
+        def label(self, evidences: List[Any] = None, indices=None):
+            
+            if evidences is not None and indices:
                 raise MisconfigurationException(
-                    "The `probabilities` and `indices` are mutually exclusive, pass only of one them."
+                    "The `evidences` and `indices` are mutually exclusive, pass only of one them."
                 )
-            if probabilities is not None:
+            
+            if evidences is not None:
+                
+                probabilities, features, net = list(zip(*evidences))
+                
                 probabilities = torch.cat([p for p in probabilities], dim=0)
-                uncertainties = self.heuristic.get_uncertainties(probabilities)
+                features = torch.cat([f for f in features], dim=0)
+                net = net[0]
+                
+                if isinstance(self.heuristic, AdvancedAbstractHeuristic):
+                    uncertainties = self.heuristic.get_uncertainties(probabilities, features=features, net=net)
+                else:
+                    uncertainties = self.heuristic.get_uncertainties(probabilities)
+                
+                # TODO: Sampling w.r.t. Gibbs distribution instead of argsort
                 indices = np.argsort(uncertainties)
-                if self._dataset is not None:
-                    self._dataset.label(indices[-self.query_size :])
+                
+            if self._dataset is not None:
+                self._dataset.label(indices[-self.query_size :])
 
         def state_dict(self) -> Dict[str, torch.Tensor]:
             return self._dataset.state_dict()

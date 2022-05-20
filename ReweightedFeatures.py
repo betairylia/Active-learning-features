@@ -34,16 +34,19 @@ def ReweightFeatures(features, weights, relu = False):
 
     # Perform binary search to find interpolation ends
     searched_results = torch.searchsorted(weights_cumsum, uniformed)
-    searched_results[:, 0] = 1 # Remove first 0's 
+    searched_results[:, 0] = torch.maximum(searched_results[:, 0], torch.ones_like(searched_results[:, 0])) # Remove first 0's 
+    searched_results = torch.minimum(searched_results, torch.ones((1,), dtype = torch.long, device = features_sorted.device) * (features_sorted.shape[-1]))
     
     # Linear interpolation: starts[ <------------ interp --> ] ends
-    starts = torch.gather(features_sorted, -1, searched_results - 1)
+    starts = torch.gather(features_sorted, -1, torch.minimum(searched_results - 1, torch.ones((1,), dtype = torch.long, device = features_sorted.device) * (features_sorted.shape[-1] - 1)))
     ends = torch.gather(features_sorted, -1, torch.minimum(searched_results, torch.ones((1,), dtype = torch.long, device = features_sorted.device) * (features_sorted.shape[-1] - 1)))
 
     # Linear interpolation: obtain interp from both weight ends
     weights_s = torch.gather(weights_cumsum, -1, searched_results - 1)
     weights_e = torch.gather(weights_cumsum, -1, searched_results)
     interp = (uniformed - weights_s) / (weights_e - weights_s)
+    
+    interp[interp != interp] = 0.5 # Replace NaNs
     
     # Do the interpolation
     result = starts + (ends - starts) * interp
