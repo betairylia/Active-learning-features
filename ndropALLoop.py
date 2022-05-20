@@ -69,7 +69,8 @@ class ndrop_ActiveLearningLoop(ActiveLearningLoop):
         self._lightning_module = self.trainer.lightning_module
         self._model_state_dict = deepcopy(self._lightning_module.state_dict())
         # self.inference_model = InferenceMCDropoutTask(self._lightning_module, self.inference_iteration)
-        self.inference_model = ndrop_InferenceMCDropoutTask(self._lightning_module, self.inference_iteration)
+        # self.inference_model = ndrop_InferenceMCDropoutTask(self._lightning_module, self.inference_iteration)
+        self.inference_model = self._lightning_module
         
         # We need to set-up AL datasets eariler.
         self.trainer.datamodule.setup()
@@ -99,7 +100,8 @@ class ndrop_ActiveLearningLoop(ActiveLearningLoop):
             self._reset_predicting()
             evidences = self.trainer.predict_loop.run()
             self.trainer.datamodule.label(
-                evidences=evidences
+                evidences=evidences,
+                net=deepcopy(self._lightning_module.head)
             )
         else:
             raise StopIteration

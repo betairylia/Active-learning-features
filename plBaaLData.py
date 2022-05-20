@@ -139,7 +139,8 @@ def ActiveLearningDataModuleWrapper(base: pl.LightningDataModule):
                 self.train_dataloader()
             return self._dataset.n_unlabelled > 0
 
-        def label(self, evidences: List[Any] = None, indices=None):
+        # TODO: Add net here.
+        def label(self, evidences: List[Any]=None, net: torch.nn.Sequential=None, indices=None):
             
             if evidences is not None and indices:
                 raise MisconfigurationException(
@@ -148,11 +149,10 @@ def ActiveLearningDataModuleWrapper(base: pl.LightningDataModule):
             
             if evidences is not None:
                 
-                probabilities, features, net = list(zip(*evidences))
+                probabilities, features = list(zip(*evidences))
                 
                 probabilities = torch.cat([p for p in probabilities], dim=0)
                 features = torch.cat([f for f in features], dim=0)
-                net = net[0]
                 
                 if isinstance(self.heuristic, AdvancedAbstractHeuristic):
                     uncertainties = self.heuristic.get_uncertainties(probabilities, features=features, net=net)
