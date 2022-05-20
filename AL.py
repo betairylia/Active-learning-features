@@ -23,7 +23,7 @@ from torchvision.transforms import transforms
 from functools import partial
 
 from plBaaLData import ActiveLearningDataModuleWrapper
-from pl_bolts.datamodules import MNISTDataModule, CIFAR10DataModule
+from pl_bolts.datamodules import MNISTDataModule, CIFAR10DataModule, FashionMNISTDataModule
 
 import pytorch_lightning as pl
 
@@ -42,7 +42,7 @@ class DataModule_(ImageClassificationData):
         return 10
 
 def get_data_module(heuristic, data_path):    
-    active_dm = ActiveLearningDataModuleWrapper(MNISTDataModule)(
+    active_dm = ActiveLearningDataModuleWrapper(FashionMNISTDataModule)(
         data_dir = "./data",
         num_workers = 16,
 
