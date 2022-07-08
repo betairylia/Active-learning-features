@@ -102,8 +102,10 @@ class FeatureDistTest(AdvancedAbstractHeuristic):
             else:
                 batch = features[batchsize*bi:batchsize*(bi+1)]
 
+            batch = batch.detach().to(net.weight.device)
+
             sortedbatch, idx = torch.sort(batch, dim = -1)
-            result.append(sortedbatch.mean(dim = 1))
+            result.append(sortedbatch.mean(dim = 1).detach().cpu())
 
         result = torch.cat(result, dim = 0)
         print(result.shape)            
