@@ -1,8 +1,10 @@
+from math import ceil
 from typing import Union, Callable
 
 import numpy as np
 import torch
 from torch import Tensor
+from tqdm import tqdm
 
 import baal.active.heuristics as heuristics
 
@@ -39,6 +41,9 @@ class AdvancedAbstractHeuristic(heuristics.AbstractHeuristic):
             Array of uncertainties
         """
         return super().get_uncertainties(predictions)
+
+    def get_indices(self, budget, predictions, features, net, **kwargs):
+        pass
 
     def reorder_indices(self, scores, **kwargs):
         """
@@ -79,8 +84,30 @@ class BAIT(AdvancedAbstractHeuristic):
     pass
 
 class FeatureDistTest(AdvancedAbstractHeuristic):
-    # TODO
-    pass
+
+    def get_indices(self, budget, predictions, features, net, **kwargs):
+
+        features = features.permute((0, 2, 1))
+
+        N = features.shape[0]
+
+        batchsize = 256
+        nBatch = ceil(N / batchsize)
+
+        # Sort
+        result = []
+        for bi in tqdm(range(nBatch)):
+            if batchsize*(bi+1) >= N:
+                batch = features[batchsize*bi:]
+            else:
+                batch = features[batchsize*bi:batchsize*(bi+1)]
+
+            sortedbatch, idx = torch.sort(batch, dim = -1)
+            result.append(sortedbatch.mean(dim = 1))
+
+        result = torch.cat(result, dim = 0)
+        print(result.shape)            
+            
 
 class ReweightedFeatureDistTest(AdvancedAbstractHeuristic):
     # TODO
@@ -110,5 +137,6 @@ def get_heuristic_with_advanced(
         "variance": heuristics.Variance,
         "precomputed": heuristics.Precomputed,
         "batch_bald": heuristics.BatchBALD,
+        "fdist": FeatureDistTest,
     }[name](shuffle_prop=shuffle_prop, reduction=reduction, **kwargs)
     return heuristic

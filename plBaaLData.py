@@ -155,15 +155,15 @@ def ActiveLearningDataModuleWrapper(base: pl.LightningDataModule):
                 features = torch.cat([f for f in features], dim=0)
                 
                 if isinstance(self.heuristic, AdvancedAbstractHeuristic):
-                    uncertainties = self.heuristic.get_uncertainties(probabilities, features=features, net=net)
+                    indices = self.heuristic.get_indices(self.query_size, probabilities, features=features, net=net)
                 else:
                     uncertainties = self.heuristic.get_uncertainties(probabilities)
-                
-                # TODO: Sampling w.r.t. Gibbs distribution instead of argsort
-                indices = np.argsort(uncertainties)
+                    # TODO: Sampling w.r.t. Gibbs distribution instead of argsort
+                    indices = np.argsort(uncertainties)
+                    indices = indices[-self.query_size :]
                 
             if self._dataset is not None:
-                self._dataset.label(indices[-self.query_size :])
+                self._dataset.label(indices)
 
         def state_dict(self) -> Dict[str, torch.Tensor]:
             return self._dataset.state_dict()
