@@ -115,6 +115,40 @@ class FeatureDistTest(AdvancedAbstractHeuristic):
         centers, indices = kmeans_plusplus(result.numpy(), n_clusters = budget, random_state = 0)
         return indices
 
+class FeatureDistNonzero(AdvancedAbstractHeuristic):
+
+    def get_indices(self, budget, predictions, features, net, **kwargs):
+
+        features = features.permute((0, 2, 1))
+
+        N = features.shape[0]
+
+        batchsize = 256
+        nBatch = ceil(N / batchsize)
+
+        # Sort
+        result = []
+        for bi in tqdm(range(nBatch)):
+            if batchsize*(bi+1) >= N:
+                batch = features[batchsize*bi:]
+            else:
+                batch = features[batchsize*bi:batchsize*(bi+1)]
+
+            batch = batch.detach().to(net[0].weight.device)
+
+            # hist, bin_edges = torch.histogram()
+            nonzeroCount = (batch > 0).sum(dim = (1,2))
+            result.append(nonzeroCount.detach().cpu())
+
+        uncertainties = torch.cat(result, dim = 0)
+        # print(result.shape)
+        indices = np.argsort(uncertainties.numpy())
+        indices = indices[-budget:]
+
+        # centers, indices = kmeans_plusplus(result.numpy(), n_clusters = budget, random_state = 0)
+        return indices
+
+
 class ReweightedFeatureDistTest(AdvancedAbstractHeuristic):
     # TODO
     pass
@@ -144,5 +178,6 @@ def get_heuristic_with_advanced(
         "precomputed": heuristics.Precomputed,
         "batch_bald": heuristics.BatchBALD,
         "fdist": FeatureDistTest,
+        "fdist-nonzero": FeatureDistNonzero,
     }[name](shuffle_prop=shuffle_prop, reduction=reduction, **kwargs)
     return heuristic
