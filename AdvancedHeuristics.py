@@ -83,6 +83,8 @@ class BAIT(AdvancedAbstractHeuristic):
     # TODO
     pass
 
+from sklearn.cluster import kmeans_plusplus
+
 class FeatureDistTest(AdvancedAbstractHeuristic):
 
     def get_indices(self, budget, predictions, features, net, **kwargs):
@@ -102,14 +104,16 @@ class FeatureDistTest(AdvancedAbstractHeuristic):
             else:
                 batch = features[batchsize*bi:batchsize*(bi+1)]
 
-            batch = batch.detach().to(net.weight.device)
+            batch = batch.detach().to(net[0].weight.device)
 
             sortedbatch, idx = torch.sort(batch, dim = -1)
             result.append(sortedbatch.mean(dim = 1).detach().cpu())
 
         result = torch.cat(result, dim = 0)
-        print(result.shape)            
-            
+        # print(result.shape)
+        
+        centers, indices = kmeans_plusplus(result.numpy(), n_clusters = budget, random_state = 0)
+        return indices
 
 class ReweightedFeatureDistTest(AdvancedAbstractHeuristic):
     # TODO
