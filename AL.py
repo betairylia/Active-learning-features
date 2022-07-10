@@ -43,7 +43,8 @@ class DataModule_(ImageClassificationData):
         return 10
 
 def get_data_module(heuristic, data_path):    
-    active_dm = ActiveLearningDataModuleWrapper(FashionMNISTDataModule)(
+    active_dm = ActiveLearningDataModuleWrapper(MNISTDataModule)(
+    # active_dm = ActiveLearningDataModuleWrapper(FashionMNISTDataModule)(
         data_dir = "./data",
         num_workers = 16,
 
