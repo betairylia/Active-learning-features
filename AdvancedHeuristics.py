@@ -83,6 +83,8 @@ class BAIT(AdvancedAbstractHeuristic):
     # TODO
     pass
 
+from sklearn.cluster import kmeans_plusplus
+
 class FeatureDistTest(AdvancedAbstractHeuristic):
 
     def get_indices(self, budget, predictions, features, net, **kwargs):
@@ -102,14 +104,50 @@ class FeatureDistTest(AdvancedAbstractHeuristic):
             else:
                 batch = features[batchsize*bi:batchsize*(bi+1)]
 
-            batch = batch.detach().to(net.weight.device)
+            batch = batch.detach().to(net[0].weight.device)
 
             sortedbatch, idx = torch.sort(batch, dim = -1)
             result.append(sortedbatch.mean(dim = 1).detach().cpu())
 
         result = torch.cat(result, dim = 0)
-        print(result.shape)            
-            
+        # print(result.shape)
+        
+        centers, indices = kmeans_plusplus(result.numpy(), n_clusters = budget, random_state = 0)
+        return indices
+
+class FeatureDistNonzero(AdvancedAbstractHeuristic):
+
+    def get_indices(self, budget, predictions, features, net, **kwargs):
+
+        features = features.permute((0, 2, 1))
+
+        N = features.shape[0]
+
+        batchsize = 256
+        nBatch = ceil(N / batchsize)
+
+        # Sort
+        result = []
+        for bi in tqdm(range(nBatch)):
+            if batchsize*(bi+1) >= N:
+                batch = features[batchsize*bi:]
+            else:
+                batch = features[batchsize*bi:batchsize*(bi+1)]
+
+            batch = batch.detach().to(net[0].weight.device)
+
+            # hist, bin_edges = torch.histogram()
+            nonzeroCount = (batch > 0).sum(dim = (1,2))
+            result.append(nonzeroCount.detach().cpu())
+
+        uncertainties = torch.cat(result, dim = 0)
+        # print(result.shape)
+        indices = np.argsort(uncertainties.numpy())
+        indices = indices[-budget:]
+
+        # centers, indices = kmeans_plusplus(result.numpy(), n_clusters = budget, random_state = 0)
+        return indices
+
 
 class ReweightedFeatureDistTest(AdvancedAbstractHeuristic):
     # TODO
@@ -140,5 +178,6 @@ def get_heuristic_with_advanced(
         "precomputed": heuristics.Precomputed,
         "batch_bald": heuristics.BatchBALD,
         "fdist": FeatureDistTest,
+        "fdist-nonzero": FeatureDistNonzero,
     }[name](shuffle_prop=shuffle_prop, reduction=reduction, **kwargs)
     return heuristic

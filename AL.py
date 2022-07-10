@@ -43,14 +43,14 @@ class DataModule_(ImageClassificationData):
         return 10
 
 def get_data_module(heuristic, data_path):    
-    active_dm = ActiveLearningDataModuleWrapper(MNISTDataModule)(
     # active_dm = ActiveLearningDataModuleWrapper(FashionMNISTDataModule)(
+    active_dm = ActiveLearningDataModuleWrapper(MNISTDataModule)(
         data_dir = "./data",
-        num_workers = 16,
+        num_workers = 4,
 
         heuristic=get_heuristic_with_advanced(heuristic),
         initial_num_labels=32,
-        query_size=32,
+        query_size=16,
         val_split=0.01
     )
     return active_dm
@@ -185,6 +185,7 @@ def main(hparams):
         gpus=1,
         max_epochs=62, # 1024 labels in total
         progress_bar_refresh_rate=20,
+        enable_checkpointing=False,
 
         limit_val_batches = 0.0,
 
