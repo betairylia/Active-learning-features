@@ -152,7 +152,7 @@ class FeatureDistNonzero(AdvancedAbstractHeuristic):
             batch = batch.detach().to(net.head[0].weight.device)
 
             # hist, bin_edges = torch.histogram()
-            nonzeroCount = (batch > 0).sum(dim = (1,2))
+            nonzeroCount = - (batch > 0).sum(dim = (1,2))
             result.append(nonzeroCount.detach().cpu())
 
         uncertainties = torch.cat(result, dim = 0)
