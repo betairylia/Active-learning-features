@@ -51,7 +51,7 @@ def get_data_module(heuristic, data_path):
         heuristic=get_heuristic_with_advanced(heuristic),
         initial_num_labels=32,
         query_size=16,
-        val_split=0.01
+        val_split=0.0
     )
     return active_dm
 
@@ -186,6 +186,7 @@ def main(hparams):
         max_epochs=62, # 1024 labels in total
         progress_bar_refresh_rate=20,
         enable_checkpointing=False,
+
 
         limit_val_batches = 0.0,
 
