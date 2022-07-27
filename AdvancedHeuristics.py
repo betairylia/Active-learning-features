@@ -75,6 +75,21 @@ class AdvancedAbstractHeuristic(heuristics.AbstractHeuristic):
         """
         return self.get_ranks(predictions, **kwargs)[0]
 
+    def register_model(self, model):
+        pass
+
+    def prediction_reset(self, model):
+        pass
+
+    # def custom_on_prediction_start(self, model):
+    #     pass
+
+    # def custom_prediction_step(self, model, batch, batch_idx):
+    #     pass
+
+    # def custom_query_step(self, budget, evidences, net):
+    #     pass
+
 class BADGE(AdvancedAbstractHeuristic):
     # TODO
     pass
@@ -134,7 +149,7 @@ class FeatureDistNonzero(AdvancedAbstractHeuristic):
             else:
                 batch = features[batchsize*bi:batchsize*(bi+1)]
 
-            batch = batch.detach().to(net[0].weight.device)
+            batch = batch.detach().to(net.head[0].weight.device)
 
             # hist, bin_edges = torch.histogram()
             nonzeroCount = (batch > 0).sum(dim = (1,2))
@@ -146,6 +161,107 @@ class FeatureDistNonzero(AdvancedAbstractHeuristic):
         indices = indices[-budget:]
 
         # centers, indices = kmeans_plusplus(result.numpy(), n_clusters = budget, random_state = 0)
+        return indices
+
+class MonteCarloBound(AdvancedAbstractHeuristic):
+
+    def register_model(self, model):
+        
+        self.model = model
+
+        self.net_layer_ids = []
+        self.head_layer_ids = []
+
+        self.net_sums = []
+        self.head_sums = []
+
+        for i, layer in enumerate(model.net):
+            if hasattr(layer, "weight"):
+                self.net_layer_ids.append(i)
+                self.net_sums.append(torch.zeros_like(layer.weight))
+
+        for i, layer in enumerate(model.head):
+            if hasattr(layer, "weight"):
+                self.head_layer_ids.append(i)
+                self.head_sums.append(torch.zeros_like(layer.weight))
+
+    def prediction_reset(self):
+
+        print("Prediction reset")
+
+        for i in range(len(self.net_sums)):
+            self.net_sums[i].fill_(0)
+        
+        for i in range(len(self.head_sums)):
+            self.head_sums[i].fill_(0)
+
+    def custom_prediction_step(self, model, batch, batch_idx):
+
+        # for bid in range(batch.shape[0]):
+
+        model.zero_grad()
+
+        # Forward
+        x, _ = batch
+        feat = model.net_no_dropout(x)
+        # logits = model.head(feat)
+
+        # Activation
+        feat_aligned = feat.unsqueeze(-1) # [bs, hidden_dim, 1]
+        last_layer = model.head[0]
+        activation = feat_aligned * last_layer.weight.permute(1, 0).unsqueeze(0) + last_layer.bias[None, None, :] # [bs, hidden_dim, out_dim]
+
+        activation_dev = activation - activation.mean(1, keepdims = True)
+        loss_proxy = (activation * activation_dev.detach()).mean((1, 2)).sum()
+        loss_proxy.backward()
+
+        # Gradient
+        for i, li in enumerate(self.net_layer_ids):
+            grad = model.net[li].grad # [hidden_dim, input_dim]
+            self.net_sums[i] += grad
+
+        for i, li in enumerate(self.head_layer_ids):
+            grad = model.head[li].grad
+            self.head_sums[i] += grad # TODO: Sum to 1 class?
+
+        return None
+
+    def custom_query_step(self, budget, evidences, dataloader, model):
+        
+        scores = []
+
+        for batch in dataloader:
+
+            xs, _ = batch
+    
+            for bid in range(xs.shape[0]):
+    
+                model.zero_grad()
+                x = xs[bid].unsqueeze(0)
+
+                feat = model.net_no_dropout(x)
+                out = model.head(feat)
+                fake_label = torch.argmax(out, dim = -1)
+
+                loss = model.loss(x, fake_label)
+                loss.backward()
+
+                score = 0
+                # Gradient
+                for i, li in enumerate(self.net_layer_ids):
+                    grad = model.net[li].grad # [hidden_dim, input_dim]
+                    score += (self.net_sums[i] * grad).sum().detach().cpu()
+
+                for i, li in enumerate(self.head_layer_ids):
+                    grad = model.head[li].grad
+                    score += (self.head_sums[i] * grad).sum().detach().cpu()
+
+                scores.append(score)
+        
+        scores = np.asarray(scores)
+        indices = np.argsort(scores)
+        indices = indices[-budget:] # Largest scores being picked
+
         return indices
 
 
@@ -179,5 +295,6 @@ def get_heuristic_with_advanced(
         "batch_bald": heuristics.BatchBALD,
         "fdist": FeatureDistTest,
         "fdist-nonzero": FeatureDistNonzero,
+        "mcgradient": MonteCarloBound,
     }[name](shuffle_prop=shuffle_prop, reduction=reduction, **kwargs)
     return heuristic

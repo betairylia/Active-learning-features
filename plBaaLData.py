@@ -140,7 +140,7 @@ def ActiveLearningDataModuleWrapper(base: pl.LightningDataModule):
             return self._dataset.n_unlabelled > 0
 
         # TODO: Add net here.
-        def label(self, evidences: List[Any]=None, net: torch.nn.Sequential=None, indices=None):
+        def label(self, evidences: List[Any]=None, net: torch.nn.Module=None, indices=None):
             
             if evidences is not None and indices:
                 raise MisconfigurationException(
@@ -148,19 +148,22 @@ def ActiveLearningDataModuleWrapper(base: pl.LightningDataModule):
                 )
             
             if evidences is not None:
-                
-                probabilities, features = list(zip(*evidences))
-                
-                probabilities = torch.cat([p for p in probabilities], dim=0)
-                features = torch.cat([f for f in features], dim=0)
-                
-                if isinstance(self.heuristic, AdvancedAbstractHeuristic):
-                    indices = self.heuristic.get_indices(self.query_size, probabilities, features=features, net=net)
+
+                if hasattr(self.heuristic, "custom_query_step"):
+                    indices = self.heuristic.custom_query_step(self.query_size, evidences, self.predict_dataloader(), net = net)
                 else:
-                    uncertainties = self.heuristic.get_uncertainties(probabilities)
-                    # TODO: Sampling w.r.t. Gibbs distribution instead of argsort
-                    indices = np.argsort(uncertainties)
-                    indices = indices[-self.query_size :]
+                    probabilities, features = list(zip(*evidences))
+                    
+                    probabilities = torch.cat([p for p in probabilities], dim=0)
+                    features = torch.cat([f for f in features], dim=0)
+                    
+                    if isinstance(self.heuristic, AdvancedAbstractHeuristic):
+                        indices = self.heuristic.get_indices(self.query_size, probabilities, features=features, net=net)
+                    else:
+                        uncertainties = self.heuristic.get_uncertainties(probabilities)
+                        # TODO: Sampling w.r.t. Gibbs distribution instead of argsort
+                        indices = np.argsort(uncertainties)
+                        indices = indices[-self.query_size :]
                 
             if self._dataset is not None:
                 self._dataset.label(indices)
@@ -170,6 +173,10 @@ def ActiveLearningDataModuleWrapper(base: pl.LightningDataModule):
 
         def load_state_dict(self, state_dict) -> None:
             return self._dataset.load_state_dict(state_dict)
+
+        def prediction_reset(self) -> None:
+            if hasattr(self.heuristic, "prediction_reset"):
+                self.heuristic.prediction_reset()
         
     return ActiveLearningLightningDataModule
 

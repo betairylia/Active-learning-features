@@ -58,7 +58,7 @@ def get_data_module(heuristic, data_path):
 #################################################################
 
 class SimpleModel(LightningModule):
-    def __init__(self, inference_iteration: int):
+    def __init__(self, heuristic = None, inference_iteration: int = 1):
         super().__init__()
         
         # Trivial linear
@@ -68,10 +68,18 @@ class SimpleModel(LightningModule):
             torch.nn.ReLU(),
             torch.nn.Dropout(),
         )
+
+        self.net_no_dropout = torch.nn.Sequential(
+            self.net[0],
+            self.net[1],
+            self.net[2]
+        )
         
         self.head = torch.nn.Sequential(
             torch.nn.Linear(8192, 10)
         )
+
+        self.loss = lambda x, y: F.mse_loss(x, F.one_hot(y, 10))
         
         # https://pytorchlightning.github.io/lightning-tutorials/notebooks/lightning_examples/cifar10-baseline.html
         # resnet = torchvision.models.resnet18(pretrained = False, num_classes = 10)
@@ -95,13 +103,15 @@ class SimpleModel(LightningModule):
 
     def training_step(self, batch, batch_nb):
         x, y = batch
-        loss = F.cross_entropy(self(x), y)
+        # loss = F.cross_entropy(self(x), y)
+        loss = self.loss(self(x), y)
         return loss
     
     def validation_step(self, batch, batch_idx):
         x, y = batch
         logits = self(x)
-        loss = F.cross_entropy(logits, y)
+        # loss = F.cross_entropy(logits, y)
+        loss = self.loss(self(x), y)
         preds = torch.argmax(logits, dim=1)
         self.accuracy(preds, y)
 
@@ -124,27 +134,29 @@ class SimpleModel(LightningModule):
         feat = self.net(x)
         logits = self.head(feat)
         return logits, feat
-    
+
     # TODO: Wrap and hide this
     def predict_step(self, batch, batch_idx):
         
-        # net = None
-        
-        with torch.no_grad():
-            
-            out = []
-            fin = []
-            
-            for _ in range(self.inference_iteration):
-                (logits, features) = self.query_step(batch, batch_idx)
-                out.append(logits)
-                fin.append(features)
+        if self.heuristic is not None and hasattr(self.heuristic, "custom_prediction_step"):
+            return self.heuristic.custom_prediction_step(self, batch, batch_idx)
 
-        # BaaL expects a shape [num_samples, num_classes, num_iterations]
-        return (
-            torch.stack(out).permute((1, 2, 0)), # [N_sample, dim, N_iter]
-            torch.stack(fin).permute((1, 2, 0)) # [N_sample, dim, N_iter]
-        )
+        else:
+            with torch.no_grad():
+                
+                out = []
+                fin = []
+                
+                for _ in range(self.inference_iteration):
+                    (logits, features) = self.query_step(batch, batch_idx)
+                    out.append(logits)
+                    fin.append(features)
+
+            # BaaL expects a shape [num_samples, num_classes, num_iterations]
+            return (
+                torch.stack(out).permute((1, 2, 0)), # [N_sample, dim, N_iter]
+                torch.stack(fin).permute((1, 2, 0)) # [N_sample, dim, N_iter]
+            )
 
     def configure_optimizers(self):
         return torch.optim.AdamW(self.parameters())
@@ -157,10 +169,17 @@ def main(hparams):
     pl.seed_everything(seed)
     
     active_dm = get_data_module(hparams.heuristic, './data')
+    heuristic = active_dm.heuristic
 
     # Init our model
-    model = SimpleModel(inference_iteration = hparams.inference_iteration)
+    model = SimpleModel(
+        heuristic = heuristic,
+        inference_iteration = hparams.inference_iteration
+    )
     # model = get_model(active_dm)
+
+    if hasattr(heuristic, "register_model"):
+        heuristic.register_model(model)
 
     aloop = ndrop_ActiveLearningLoop(
         label_epoch_frequency = hparams.epochs_per_query,

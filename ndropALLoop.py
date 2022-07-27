@@ -98,10 +98,11 @@ class ndrop_ActiveLearningLoop(ActiveLearningLoop):
 
         if self.trainer.datamodule.has_unlabelled_data:
             self._reset_predicting()
+            self.trainer.datamodule.prediction_reset()
             evidences = self.trainer.predict_loop.run()
             self.trainer.datamodule.label(
                 evidences=evidences,
-                net=deepcopy(self._lightning_module.head)
+                net=deepcopy(self._lightning_module)
             )
         else:
             raise StopIteration
