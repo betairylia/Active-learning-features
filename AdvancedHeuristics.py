@@ -4,9 +4,12 @@ from typing import Union, Callable
 import numpy as np
 import torch
 from torch import Tensor
+from torch import nn
 from tqdm import tqdm
 
 import baal.active.heuristics as heuristics
+
+from opacus.grad_sample import GradSampleModule
 
 class AdvancedAbstractHeuristic(heuristics.AbstractHeuristic):
     
@@ -169,21 +172,28 @@ class MonteCarloBound(AdvancedAbstractHeuristic):
         
         self.model = model
 
-        self.net_layer_ids = []
-        self.head_layer_ids = []
+#         self.net_layer_ids = []
+#         self.head_layer_ids = []
 
-        self.net_sums = []
-        self.head_sums = []
+#         self.net_sums = []
+#         self.head_sums = []
 
-        for i, layer in enumerate(model.net):
-            if hasattr(layer, "weight"):
-                self.net_layer_ids.append(i)
-                self.net_sums.append(torch.zeros_like(layer.weight))
+        self.key_layers = model.key_layers
+        self.sums = []
 
-        for i, layer in enumerate(model.head):
-            if hasattr(layer, "weight"):
-                self.head_layer_ids.append(i)
-                self.head_sums.append(torch.zeros_like(layer.weight))
+#         for i, layer in enumerate(model.net):
+#             if hasattr(layer, "parameters") and len(list(layer.parameters())) > 0:
+#                 self.net_layer_ids.append(i)
+#                 self.net_sums.append(torch.zeros_like(next(layer.parameters())))
+
+#         for i, layer in enumerate(model.head):
+#             if hasattr(layer, "parameters") and len(list(layer.parameters())) > 0:
+#                 self.head_layer_ids.append(i)
+#                 self.head_sums.append(torch.zeros_like(next(layer.parameters())))
+        
+        for layer in self.key_layers:
+            if hasattr(layer, "parameters") and len(list(layer.parameters())) > 0:
+                self.sums.append(torch.zeros_like(next(layer.parameters())))
 
     def prediction_reset(self):
 
@@ -198,17 +208,20 @@ class MonteCarloBound(AdvancedAbstractHeuristic):
     def custom_prediction_step(self, model, batch, batch_idx):
 
         # for bid in range(batch.shape[0]):
-
+#         for gs in model.gradsamples:
+# #             gs.disable_hooks()
+#             pass
+        
         model.zero_grad()
 
         # Forward
         x, _ = batch
         feat = model.net_no_dropout(x)
-        # logits = model.head(feat)
+        logits = model.head(feat)
 
         # Activation
         feat_aligned = feat.unsqueeze(-1) # [bs, hidden_dim, 1]
-        last_layer = model.head[0]
+        last_layer = model.head[-1]
         activation = feat_aligned * last_layer.weight.permute(1, 0).unsqueeze(0) + last_layer.bias[None, None, :] # [bs, hidden_dim, out_dim]
 
         activation_dev = activation - activation.mean(1, keepdims = True)
@@ -217,25 +230,32 @@ class MonteCarloBound(AdvancedAbstractHeuristic):
 
         # Gradient
         for i, li in enumerate(self.net_layer_ids):
-            grad = model.net[li].grad # [hidden_dim, input_dim]
+            grad = next(model.net[li].parameters()).grad # [hidden_dim, input_dim]
+            self.net_sums[i] = self.net_sums[i].to(grad.device)
             self.net_sums[i] += grad
 
         for i, li in enumerate(self.head_layer_ids):
-            grad = model.head[li].grad
+            grad = next(model.head[li].parameters()).grad
+            self.head_sums[i] = self.head_sums[i].to(grad.device)
             self.head_sums[i] += grad # TODO: Sum to 1 class?
 
+#         for gs in model.gradsamples:
+# #             gs.enable_hooks()
+#             pass
+            
         return None
 
     def custom_query_step(self, budget, evidences, dataloader, model):
         
         scores = []
 
-        for batch in dataloader:
+        for batch in tqdm(dataloader, "Collecting query scores"):
 
             xs, _ = batch
-    
+            xs = xs.to(next(model.head[self.head_layer_ids[0]].parameters()).device)
+
             for bid in range(xs.shape[0]):
-    
+
                 model.zero_grad()
                 x = xs[bid].unsqueeze(0)
 
@@ -243,27 +263,151 @@ class MonteCarloBound(AdvancedAbstractHeuristic):
                 out = model.head(feat)
                 fake_label = torch.argmax(out, dim = -1)
 
-                loss = model.loss(x, fake_label)
+                loss = model.loss(out, fake_label)
                 loss.backward()
 
                 score = 0
                 # Gradient
                 for i, li in enumerate(self.net_layer_ids):
-                    grad = model.net[li].grad # [hidden_dim, input_dim]
+                    grad = next(model.net[li].parameters()).grad # [hidden_dim, input_dim]
+                    self.net_sums[i] = self.net_sums[i].to(grad.device)
                     score += (self.net_sums[i] * grad).sum().detach().cpu()
 
                 for i, li in enumerate(self.head_layer_ids):
-                    grad = model.head[li].grad
+                    grad = next(model.head[li].parameters()).grad
+                    self.head_sums[i] = self.head_sums[i].to(grad.device)
                     score += (self.head_sums[i] * grad).sum().detach().cpu()
 
-                scores.append(score)
-        
+                scores.append(-score)
+
         scores = np.asarray(scores)
         indices = np.argsort(scores)
         indices = indices[-budget:] # Largest scores being picked
 
         return indices
 
+class MonteCarloBoundBatched(MonteCarloBound):
+    
+    def get_data_vec(self, model, net, head, x):
+        
+        x = x.unsqueeze(0)
+        return self.get_batch_vec(model, net, head, x).flatten()
+    
+    def get_batch_vec(self, model, net, head, xs):
+        
+        # net / head: GradSampleModule
+        net.zero_grad()
+        head.zero_grad()
+        
+        # net / head: nn.Sequential
+        net = next(net.children())
+        head = next(head.children())
+        
+        bs = xs.shape[0]
+
+        feat = net(xs)
+        out = head(feat)
+        fake_label = torch.argmax(out, dim = -1)
+
+        loss = model.loss(out, fake_label)
+        loss.backward()
+
+        data_vec = []
+
+        # Gradient
+        for i, li in enumerate(self.net_layer_ids):
+            grad = next(net[li].parameters()).grad_sample # [hidden_dim, input_dim]
+            data_vec.append(grad.detach().view(bs, -1))
+
+        for i, li in enumerate(self.head_layer_ids):
+            grad = next(head[li].parameters()).grad_sample
+            data_vec.append(grad.detach().view(bs, -1))
+
+        data_vec = torch.cat(data_vec, dim = -1)
+        return data_vec
+    
+    def patch_module(self, seq):
+        for i in range(len(seq)):
+            if isinstance(seq[i], nn.Linear):
+                seq[i] = GradSampleModule(seq[i])
+                
+    def unpatch_module(self, seq):
+        for i in range(len(seq)):
+            if isinstance(seq[i], GradSampleModule):
+                seq[i] = next(seq[i].children())
+    
+    def custom_query_step(self, budget, evidences, dataloader, model):
+        '''Test method: spherical lerp'''
+        
+        target_vec = [*self.net_sums, *self.head_sums]
+        target_vec = [t.flatten() for t in target_vec]
+        target_vec = torch.cat(target_vec)
+        target_vec = target_vec.to(next(model.parameters()).device)
+
+        # Create dummy network
+        _, net, head, keys = model.getNets()
+        net.load_state_dict(model.net_no_dropout.state_dict())
+        head.load_state_dict(model.head.state_dict())
+        
+#         self.patch_module(net)
+#         self.patch_module(head)
+        net = GradSampleModule(net)
+        head = GradSampleModule(head)
+        net = net.to(target_vec.device)
+        head = head.to(target_vec.device)
+        
+        sum_vec = torch.zeros_like(target_vec, device = target_vec.device)
+        sum_norm = 0
+        
+        picked_indices = []
+
+        for qid in range(budget):
+            
+            scores = []
+            
+            for batch in tqdm(dataloader, "Collecting query scores"):
+
+                xs, _ = batch
+                xs = xs.to(target_vec.device)
+
+#                 batch_vec = []
+                
+#                 for bid in range(xs.shape[0]):
+
+#                     data_vec = self.get_data_vec(model, xs[bid])
+#                     batch_vec.append(data_vec)
+
+#                 batch_vec = torch.stack(batch_vec, dim = 0)
+                batch_vec = self.get_batch_vec(model, net, head, xs)
+
+                batch_norm = batch_vec.norm(dim = -1, keepdim = True)
+
+                # Add previous length
+                batch_vec = batch_vec + sum_vec[None, :]
+                
+                # Normalize
+                batch_norm = batch_norm + sum_norm
+                batch_vec = batch_vec / batch_vec.norm(dim = -1, keepdim = True) * batch_norm
+                
+                score = (batch_vec * target_vec[None, :]).sum(-1)
+                
+                scores.append((-score).detach().cpu().numpy())
+
+            scores = np.concatenate(scores)
+            idx = np.argsort(scores)[-1]
+            picked_indices.append(idx) # Largest scores being picked
+            
+            # Retrieve information from picked index and update
+            data_vec = self.get_data_vec(
+                model,
+                net,
+                head,
+                dataloader.dataset[idx][0].to(target_vec.device)
+            )
+            sum_vec += data_vec
+            sum_norm += data_vec.norm()
+            
+        return picked_indices
 
 class ReweightedFeatureDistTest(AdvancedAbstractHeuristic):
     # TODO
@@ -296,5 +440,6 @@ def get_heuristic_with_advanced(
         "fdist": FeatureDistTest,
         "fdist-nonzero": FeatureDistNonzero,
         "mcgradient": MonteCarloBound,
+        "mcgradient-batched": MonteCarloBoundBatched,
     }[name](shuffle_prop=shuffle_prop, reduction=reduction, **kwargs)
     return heuristic

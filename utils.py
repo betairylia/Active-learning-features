@@ -82,7 +82,7 @@ def ImageMosaicSQ(images):
     # Copy generated images to big image
     for b in range(nImages):
         img = torch.clamp((images[b].detach().cpu() + 0.5) * 255.0, 0.0, 255.0).permute(1, 2, 0).long().numpy()
-        if images[0].shape[0] >= 1:
+        if images[0].shape[0] > 1:
             img = Image.fromarray(img.astype(np.uint8))
         else:
             img = Image.fromarray(img.astype(np.uint8).squeeze(-1), 'L')

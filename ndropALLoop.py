@@ -91,6 +91,11 @@ class ndrop_ActiveLearningLoop(ActiveLearningLoop):
                 metrics_AL = metrics[0]
                 metrics_AL = {('AL/%s'%k): metrics_AL[k] for k in metrics_AL}
                 
+                stddrop, stdndrop = self.inference_model.EvalStddevEpisode()
+                if stddrop is not None:
+                    metrics_AL['AL/std-Dropout'] = stddrop
+                    metrics_AL['AL/std-MonteCarlo'] = stdndrop
+                
                 # Also log current number of labelled samples
                 metrics_AL['AL/labelled'] = self.trainer.datamodule._dataset.n_labelled
                 self.trainer.logger.log_metrics(metrics_AL, step = self.progress.current.completed) # Use current step for AL
@@ -100,10 +105,12 @@ class ndrop_ActiveLearningLoop(ActiveLearningLoop):
             self._reset_predicting()
             self.trainer.datamodule.prediction_reset()
             evidences = self.trainer.predict_loop.run()
-            self.trainer.datamodule.label(
+            qIm = self.trainer.datamodule.label(
                 evidences=evidences,
-                net=deepcopy(self._lightning_module)
+                net=self._lightning_module,
+                getImg = True
             )
+            self.trainer.logger.log_image(key = "AL/queriesVis", images = [qIm], step = self.progress.current.completed)
         else:
             raise StopIteration
 

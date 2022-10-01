@@ -30,6 +30,8 @@ from baal.active.dataset import ActiveLearningDataset
 from baal.active.heuristics import AbstractHeuristic, BALD
 from AdvancedHeuristics import AdvancedAbstractHeuristic
 
+from utils import ImageMosaicSQ
+
 from functools import partial
 import copy
 
@@ -117,6 +119,9 @@ def ActiveLearningDataModuleWrapper(base: pl.LightningDataModule):
             al_loader = ChangeLoaderDataset(loader, self._dataset, True)
 
             return al_loader
+        
+        def get_base_module(self):
+            return super()
 
         def predict_dataloader(self, *args: Any, **kwargs: Any) -> DataLoader:
             test_loader = copy.copy(super().test_dataloader(*args, **kwargs))
@@ -140,7 +145,7 @@ def ActiveLearningDataModuleWrapper(base: pl.LightningDataModule):
             return self._dataset.n_unlabelled > 0
 
         # TODO: Add net here.
-        def label(self, evidences: List[Any]=None, net: torch.nn.Module=None, indices=None):
+        def label(self, evidences: List[Any]=None, net: torch.nn.Module=None, indices=None, getImg = False):
             
             if evidences is not None and indices:
                 raise MisconfigurationException(
@@ -150,7 +155,7 @@ def ActiveLearningDataModuleWrapper(base: pl.LightningDataModule):
             if evidences is not None:
 
                 if hasattr(self.heuristic, "custom_query_step"):
-                    indices = self.heuristic.custom_query_step(self.query_size, evidences, self.predict_dataloader(), net = net)
+                    indices = self.heuristic.custom_query_step(self.query_size, evidences, self.predict_dataloader(), model = net)
                 else:
                     probabilities, features = list(zip(*evidences))
                     
@@ -166,7 +171,14 @@ def ActiveLearningDataModuleWrapper(base: pl.LightningDataModule):
                         indices = indices[-self.query_size :]
                 
             if self._dataset is not None:
+                
+                if getImg:
+                    im = ImageMosaicSQ([self._dataset.pool[i][0] for i in indices])
+                
                 self._dataset.label(indices)
+                
+                if getImg:
+                    return im
 
         def state_dict(self) -> Dict[str, torch.Tensor]:
             return self._dataset.state_dict()
