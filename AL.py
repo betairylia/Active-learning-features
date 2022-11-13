@@ -47,7 +47,8 @@ IMG_SIZE = 28
 #         return 10
 
 def get_data_module(heuristic, data_path, budget=16, initial=32):    
-    active_dm = ActiveLearningDataModuleWrapper(FashionMNISTDataModule)(
+    active_dm = ActiveLearningDataModuleWrapper(CIFAR10DataModule)(
+#     active_dm = ActiveLearningDataModuleWrapper(FashionMNISTDataModule)(
 #     active_dm = ActiveLearningDataModuleWrapper(MNISTDataModule)(
         data_dir = "./data",
         num_workers = 0,
@@ -68,7 +69,8 @@ class SimpleModel(LightningModule):
     def __init__(self, args, heuristic = None, inference_iteration: int = 1, variance_val_loader_getter = None, perEpoch = False, perEpisode = True):
         super().__init__()
         
-        # Trivial linear
+        # Construct networks
+        self.hidden_dim = 2048
         self.net, self.net_no_dropout, self.head, self.key_layers = self.getNets()
         
         if args.loss == 'mse':
@@ -98,38 +100,39 @@ class SimpleModel(LightningModule):
         self.varval_loader_getter = variance_val_loader_getter
         self.perEpoch = perEpoch
         self.perEpisode = perEpisode
-        
-        self.hidden_dim = 1024
 
     def getNets(self):
         
-#         net = torch.nn.Sequential(
-#             torch.nn.Flatten(),
+        net = torch.nn.Sequential(
+            torch.nn.Flatten(),
 #             torch.nn.Linear(28 * 28 * 1, self.hidden_dim),
-#             torch.nn.ReLU(),
-#             torch.nn.Dropout(),
-#         )
-        
-#         net_no_dropout = torch.nn.Sequential(
-#             net[0],
-#             net[1],
-#             net[2]
-#         )
-        
-        net = resnet18(
-            num_classes = self.hidden_dim,
-            zero_init_residual = True,
-            conv1_type = "cifar",
-            no_maxpool = True
+            torch.nn.Linear(32 * 32 * 3, self.hidden_dim),
+            torch.nn.ReLU(),
+            torch.nn.Dropout(),
         )
         
-        net_no_dropout = net
+        net_no_dropout = torch.nn.Sequential(
+            net[0],
+            net[1],
+            net[2]
+        )
+        
+#         net = resnet18(
+#             num_classes = self.hidden_dim,
+#             zero_init_residual = False,
+#             conv1_type = "cifar",
+#             no_maxpool = True,
+#             norm_layer = nn.InstanceNorm2d
+#         )
+        
+#         net_no_dropout = net
         
         head = torch.nn.Sequential(
             torch.nn.Linear(self.hidden_dim, 10)
         )
         
-        key_layers = [net.fc, head[0]]
+        key_layers = [net[1], head[0]]
+#         key_layers = [net.fc, head[0]]
         
         return net, net_no_dropout, head, key_layers
         
