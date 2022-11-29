@@ -36,6 +36,8 @@ from pytorch_lightning.loggers import WandbLogger
 from opacus.grad_sample import GradSampleModule
 
 from resnet import resnet18
+import math
+from weight_drop import *
 
 #################################################
 
@@ -86,6 +88,7 @@ class SimpleModel(LightningModule):
         
         self.accuracy = Accuracy()
         self.heuristic = heuristic
+        self.is_uncertain = False
 
         # TODO: Wrap and hide followings
         changed = _patch_dropout_layers(self)
@@ -101,37 +104,52 @@ class SimpleModel(LightningModule):
         self.perEpoch = perEpoch
         self.perEpisode = perEpisode
 
+    def get_uncertain(self):
+        return self.is_uncertain
+    
+    def evalUncertain(self):
+        self.is_uncertain = True
+        
+    def unevalUncertain(self):
+        self.is_uncertain = False
+        
     def getNets(self):
         
-        net = torch.nn.Sequential(
-            torch.nn.Flatten(),
-#             torch.nn.Linear(28 * 28 * 1, self.hidden_dim),
-            torch.nn.Linear(32 * 32 * 3, self.hidden_dim),
-            torch.nn.ReLU(),
-            torch.nn.Dropout(),
-        )
-        
-        net_no_dropout = torch.nn.Sequential(
-            net[0],
-            net[1],
-            net[2]
-        )
-        
-#         net = resnet18(
-#             num_classes = self.hidden_dim,
-#             zero_init_residual = False,
-#             conv1_type = "cifar",
-#             no_maxpool = True,
-#             norm_layer = nn.InstanceNorm2d
+#         net = torch.nn.Sequential(
+#             torch.nn.Flatten(),
+# #             torch.nn.Linear(28 * 28 * 1, self.hidden_dim),
+#             torch.nn.Linear(32 * 32 * 3, self.hidden_dim),
+#             torch.nn.ReLU(),
+#             torch.nn.Dropout(),
 #         )
         
-#         net_no_dropout = net
+#         net_no_dropout = torch.nn.Sequential(
+#             net[0],
+#             net[1],
+#             net[2]
+#         )
+        
+        net = resnet18(
+            num_classes = self.hidden_dim,
+            zero_init_residual = False,
+            conv1_type = "cifar",
+            no_maxpool = True,
+            norm_layer = nn.Identity
+        )
+        
+        net_no_dropout = net
         
         head = torch.nn.Sequential(
             torch.nn.Linear(self.hidden_dim, 10)
         )
         
-        key_layers = [net[1], head[0]]
+        key_layers = []
+        for layer in net.modules():
+            if isinstance(layer, nn.Module):
+                if hasattr(layer, 'weight'):
+                    key_layers.append(layer)
+        key_layers.append(head[0])
+#         key_layers = [net[1], head[0]]
 #         key_layers = [net.fc, head[0]]
         
         return net, net_no_dropout, head, key_layers
@@ -280,6 +298,79 @@ class SimpleModel(LightningModule):
     def configure_optimizers(self):
         return torch.optim.AdamW(self.parameters())
 
+    
+    
+class SimpleCNNModel(SimpleModel):
+    
+    def getNets(self):
+        
+        p = 0.9
+        
+        norm_layer = torch.nn.InstanceNorm2d
+        nd = self.hidden_dim // 16
+        net = torch.nn.Sequential(
+            *self.WrappedConvolutionalBlock(32, 32, 3, nd // 4, kernel = 5, norm = norm_layer, p = 1), # 32x32
+            *self.WrappedConvolutionalBlock(32, 32, nd // 4, nd // 2, kernel = 3, stride = 2, norm = norm_layer, p = p), # 16x16
+            *self.WrappedConvolutionalBlock(16, 16, nd // 2, nd // 2, kernel = 3, norm = norm_layer, p = p), # 16x16
+            *self.WrappedConvolutionalBlock(16, 16, nd // 2, nd, kernel = 3, stride = 2, norm = norm_layer, p = p), # 8x8
+            *self.WrappedConvolutionalBlock( 8,  8, nd, nd, kernel = 3, norm = norm_layer, p = p), # 8x8
+            *self.WrappedConvolutionalBlock( 8,  8, nd, nd, kernel = 3, stride = 2, norm = norm_layer, p = p), # 4x4
+            *self.WrappedConvolutionalBlock( 4,  4, nd, nd, kernel = 3, norm = norm_layer, p = p), # 4x4
+            torch.nn.Flatten(),
+        )
+        
+        net_no_dropout = net
+        
+        head = torch.nn.Sequential(
+            torch.nn.Linear(self.hidden_dim, 10)
+        )
+        
+        key_layers = [net[0], net[3], net[6], net[9], net[12], net[15], net[18]]
+#         for layer in net.modules():
+#             if isinstance(layer, nn.Module):
+#                 if hasattr(layer, 'weight'):
+#                     key_layers.append(layer)
+        key_layers.append(head[0])
+        
+        print(">>======================================\nBackbone:")
+        print(net)
+        print(">>======================================\nHead:")
+        print(head)
+        print(">>======================================\nKey layers:")
+        print(key_layers)
+        print(">>======================================")
+
+        return net, net_no_dropout, head, key_layers
+    
+    def calc_same_pad(self, i: int, k: int, s: int, d: int) -> int:
+        return max((math.ceil(i / s) - 1) * s + (k - 1) * d + 1 - i, 0)
+    
+    def WrappedConvolutionalBlock(self, h, w, in_ch, out_ch, norm = torch.nn.InstanceNorm2d,\
+                                  kernel = 3, stride = 1, act = True, p = 0.5):
+        
+        conv = nn.Conv2d(in_ch, out_ch, kernel, stride = stride, 
+                         padding = math.ceil(self.calc_same_pad(64, kernel, stride, 1) / 2))
+        if p < 1:
+            conv = WeightDrop(conv, ['weight'], p, self.get_uncertain)
+        
+        if norm is torch.nn.LayerNorm:
+            bn = norm([out_ch, h // stride, w // stride])
+        else:
+            bn = norm(out_ch)
+        
+        if act:
+            return [conv, bn, nn.ReLU(inplace = True)]
+        else:
+            return [conv, bn]
+    
+
+    
+models_dict =\
+{
+    "default": SimpleModel,
+    "simple-cnn": SimpleCNNModel
+}
+    
 #################################################################
         
 def main(hparams):
@@ -291,7 +382,7 @@ def main(hparams):
     heuristic = active_dm.heuristic
 
     # Init our model
-    model = SimpleModel(
+    model = models_dict[hparams.model](
         args,
         heuristic = heuristic,
         inference_iteration = hparams.inference_iteration,
@@ -356,6 +447,8 @@ if __name__ == "__main__":
     parser.add_argument("--loss", type=str, default="cent") # cent, mse
     parser.add_argument("--epochs_per_query", type=int, default=25)
     parser.add_argument("--inference_iteration", type=int, default=20)
+    parser.add_argument("--model", type=str, default='default')
+
     
     parser.add_argument('--budget', type=int, default=16, help="Budget per query")
     parser.add_argument('--initial', type=int, default=32, help="Initial labels")

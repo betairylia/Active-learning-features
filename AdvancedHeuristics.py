@@ -168,6 +168,10 @@ class FeatureDistNonzero(AdvancedAbstractHeuristic):
         # centers, indices = kmeans_plusplus(result.numpy(), n_clusters = budget, random_state = 0)
         return indices
 
+    
+    
+    
+    
 class MonteCarloBound(AdvancedAbstractHeuristic):
 
     def register_model(self, model):
@@ -194,7 +198,15 @@ class MonteCarloBound(AdvancedAbstractHeuristic):
 #                 self.head_sums.append(torch.zeros_like(next(layer.parameters())))
         
         for layer in self.key_layers:
-            self.sums.append(torch.zeros_like(next(layer.parameters())))
+            
+            for param in layer.parameters():
+                if len(param.shape) > 1:
+                    break
+            else:
+                continue
+            
+            print("Registered: [%s]" % (str(param.shape)))
+            self.sums.append(torch.zeros_like(param))
 
     def prediction_reset(self):
 
@@ -217,6 +229,7 @@ class MonteCarloBound(AdvancedAbstractHeuristic):
 #             pass
         
         model.zero_grad()
+        model.evalUncertain()
 
         # Forward
         x, _ = batch
@@ -234,7 +247,14 @@ class MonteCarloBound(AdvancedAbstractHeuristic):
 
         # Gradient
         for i, layer in enumerate(self.key_layers):
-            grad = next(layer.parameters()).grad # [hidden_dim, input_dim]
+            
+            for param in layer.parameters():
+                if len(param.shape) > 1:
+                    break
+            else:
+                continue
+            
+            grad = param.grad # [hidden_dim, input_dim]
             self.sums[i] = self.sums[i].to(grad.device)
             self.sums[i] += grad
             
@@ -251,7 +271,9 @@ class MonteCarloBound(AdvancedAbstractHeuristic):
 #         for gs in model.gradsamples:
 # #             gs.enable_hooks()
 #             pass
-            
+        
+        model.unevalUncertain()
+
         return None
 
     def custom_query_step(self, budget, evidences, dataloader, model):
@@ -278,7 +300,14 @@ class MonteCarloBound(AdvancedAbstractHeuristic):
                 score = 0
                 # Gradient
                 for i, layer in enumerate(self.key_layers):
-                    grad = next(layer.parameters()).grad # [hidden_dim, input_dim]
+                    
+                    for param in layer.parameters():
+                        if len(param.shape) > 1:
+                            break
+                    else:
+                        continue
+                    
+                    grad = param.grad # [hidden_dim, input_dim]
                     self.sums[i] = self.sums[i].to(grad.device)
                     score += (self.sums[i] * grad).sum().detach().cpu()
 #                 for i, li in enumerate(self.net_layer_ids):
@@ -299,6 +328,10 @@ class MonteCarloBound(AdvancedAbstractHeuristic):
 
         return indices
 
+    
+    
+    
+    
 class MonteCarloBoundBatched(MonteCarloBound):
     
     def get_data_vec(self, model, net, head, keys, x):
@@ -329,7 +362,14 @@ class MonteCarloBoundBatched(MonteCarloBound):
 
         # Gradient
         for i, layer in enumerate(keys):
-            grad = next(layer.parameters()).grad_sample # [hidden_dim, input_dim]
+            
+            for param in layer.parameters():
+                if len(param.shape) > 1:
+                    break
+            else:
+                continue
+            
+            grad = param.grad_sample # [hidden_dim, input_dim]
             data_vec.append(grad.detach().view(bs, -1))
             
 #         for i, li in enumerate(self.net_layer_ids):
@@ -435,6 +475,58 @@ class MonteCarloBoundBatched(MonteCarloBound):
             
         return picked_indices
 
+    
+    
+    
+    
+class MonteCarloBoundBatchedFast(MonteCarloBound):
+    
+    def custom_query_step(self, budget, evidences, dataloader, model):
+        
+        scores = []
+
+        for batch in tqdm(dataloader, "Collecting query scores"):
+
+            xs, _ = batch
+            xs = xs.to(next(model.parameters()).device)
+
+            for bid in range(xs.shape[0]):
+
+                model.zero_grad()
+                x = xs[bid].unsqueeze(0)
+
+                feat = model.net_no_dropout(x)
+                out = model.head(feat)
+                fake_label = torch.argmax(out, dim = -1)
+
+                loss = model.loss(out, fake_label)
+                loss.backward()
+
+                score = 0
+                
+                # Gradient
+                for i, layer in enumerate(self.key_layers):
+                    
+                    for param in layer.parameters():
+                        if len(param.shape) > 1:
+                            break
+                    else:
+                        continue
+                    
+                    grad = param.grad # [hidden_dim, input_dim]
+                    self.sums[i] = self.sums[i].to(grad.device)
+                    score += (self.sums[i] * grad).sum().detach().cpu()
+
+                scores.append(-score)
+
+        sample_rate = 5.0
+        num_random_pool = int(budget * sample_rate)
+                
+        scores = np.asarray(scores)
+        indices = np.random.choice(np.argsort(scores)[-num_random_pool:], size = (budget, ), replace = False) # Largest scores being picked
+
+        return indices
+    
 class ReweightedFeatureDistTest(AdvancedAbstractHeuristic):
     # TODO
     pass
@@ -467,5 +559,6 @@ def get_heuristic_with_advanced(
         "fdist-nonzero": FeatureDistNonzero,
         "mcgradient": MonteCarloBound,
         "mcgradient-batched": MonteCarloBoundBatched,
+        "mcgradient-batched-fast": MonteCarloBoundBatchedFast
     }[name](shuffle_prop=shuffle_prop, reduction=reduction, **kwargs)
     return heuristic

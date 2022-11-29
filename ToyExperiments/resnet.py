@@ -5,7 +5,7 @@ import torch.nn as nn
 from torch import Tensor
 
 from torch.utils.model_zoo import load_url as load_state_dict_from_url
-
+from weight_drop import *
 
 __all__ = [
     "ResNet",
@@ -34,9 +34,9 @@ model_urls = {
 }
 
 
-def conv3x3(in_planes: int, out_planes: int, stride: int = 1, groups: int = 1, dilation: int = 1) -> nn.Conv2d:
+def conv3x3(get_uncertain, in_planes: int, out_planes: int, stride: int = 1, groups: int = 1, dilation: int = 1, p = 0.5) -> nn.Conv2d:
     """3x3 convolution with padding"""
-    return nn.Conv2d(
+    layer = nn.Conv2d(
         in_planes,
         out_planes,
         kernel_size=3,
@@ -46,11 +46,13 @@ def conv3x3(in_planes: int, out_planes: int, stride: int = 1, groups: int = 1, d
         bias=False,
         dilation=dilation,
     )
+    return WeightDrop(layer, ['weight'], p, get_uncertain)
 
 
-def conv1x1(in_planes: int, out_planes: int, stride: int = 1) -> nn.Conv2d:
+def conv1x1(get_uncertain, in_planes: int, out_planes: int, stride: int = 1, p = 0.5) -> nn.Conv2d:
     """1x1 convolution"""
-    return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
+    layer = nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
+    return WeightDrop(layer, ['weight'], p, get_uncertain)
 
 
 class BasicBlock(nn.Module):
@@ -66,6 +68,8 @@ class BasicBlock(nn.Module):
         base_width: int = 64,
         dilation: int = 1,
         norm_layer: Optional[Callable[..., nn.Module]] = None,
+        get_uncertain = None,
+        p = 0.5
     ) -> None:
         super().__init__()
         if norm_layer is None:
@@ -75,10 +79,10 @@ class BasicBlock(nn.Module):
         if dilation > 1:
             raise NotImplementedError("Dilation > 1 not supported in BasicBlock")
         # Both self.conv1 and self.downsample layers downsample the input when stride != 1
-        self.conv1 = conv3x3(inplanes, planes, stride)
+        self.conv1 = conv3x3(get_uncertain, inplanes, planes, stride, p = p)
         self.bn1 = norm_layer(planes)
         self.relu = nn.ReLU(inplace=True)
-        self.conv2 = conv3x3(planes, planes)
+        self.conv2 = conv3x3(get_uncertain, planes, planes, p = p)
         self.bn2 = norm_layer(planes)
         self.downsample = downsample
         self.stride = stride
@@ -121,17 +125,19 @@ class Bottleneck(nn.Module):
         base_width: int = 64,
         dilation: int = 1,
         norm_layer: Optional[Callable[..., nn.Module]] = None,
+        get_uncertain = None,
+        p = 0.5
     ) -> None:
         super().__init__()
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
         width = int(planes * (base_width / 64.0)) * groups
         # Both self.conv2 and self.downsample layers downsample the input when stride != 1
-        self.conv1 = conv1x1(inplanes, width)
+        self.conv1 = conv1x1(get_uncertain, inplanes, width, p = p)
         self.bn1 = norm_layer(width)
-        self.conv2 = conv3x3(width, width, stride, groups, dilation)
+        self.conv2 = conv3x3(get_uncertain, width, width, stride, groups, dilation, p = p)
         self.bn2 = norm_layer(width)
-        self.conv3 = conv1x1(width, planes * self.expansion)
+        self.conv3 = conv1x1(get_uncertain, width, planes * self.expansion, p = p)
         self.bn3 = norm_layer(planes * self.expansion)
         self.relu = nn.ReLU(inplace=True)
         self.downsample = downsample
@@ -173,7 +179,9 @@ class ResNet(nn.Module):
         norm_layer: Optional[Callable[..., nn.Module]] = None,
         conv1_type: str = 'imagenet',
         no_maxpool: bool = False,
-        input_ch: int = 3
+        input_ch: int = 3,
+        get_uncertain = None,
+        p = 0.5
     ) -> None:
         super().__init__()
         if norm_layer is None:
@@ -193,6 +201,9 @@ class ResNet(nn.Module):
             )
         self.groups = groups
         self.base_width = width_per_group
+        
+        self.get_uncertain = get_uncertain
+        self.p = p
 
         print("conv1_type:{}".format(conv1_type))
         if conv1_type == 'imagenet':
@@ -216,14 +227,16 @@ class ResNet(nn.Module):
         self.layer3 = self._make_layer(block, 256, layers[2], stride=2, dilate=replace_stride_with_dilation[1])
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2, dilate=replace_stride_with_dilation[2])
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(512 * block.expansion, num_classes)
+        self.fc = WeightDrop(nn.Linear(512 * block.expansion, num_classes), ['weight'], 1 - ((1-p) * 1.5), get_uncertain)
 
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
-            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
+        # TODO: We have to block resnet's initialization for DropConnect rn.
+        if get_uncertain is None:
+            for m in self.modules():
+                if isinstance(m, nn.Conv2d):
+                    nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+                elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                    nn.init.constant_(m.weight, 1)
+                    nn.init.constant_(m.bias, 0)
 
         # Zero-initialize the last BN in each residual branch,
         # so that the residual branch starts with zeros, and each residual block behaves like an identity.
@@ -251,14 +264,15 @@ class ResNet(nn.Module):
             stride = 1
         if stride != 1 or self.inplanes != planes * block.expansion:
             downsample = nn.Sequential(
-                conv1x1(self.inplanes, planes * block.expansion, stride),
+                conv1x1(self.get_uncertain, self.inplanes, planes * block.expansion, stride, p = self.p),
                 norm_layer(planes * block.expansion),
             )
 
         layers = []
         layers.append(
             block(
-                self.inplanes, planes, stride, downsample, self.groups, self.base_width, previous_dilation, norm_layer
+                self.inplanes, planes, stride, downsample, self.groups, self.base_width, previous_dilation, norm_layer,
+                self.get_uncertain, self.p
             )
         )
         self.inplanes = planes * block.expansion
@@ -271,6 +285,8 @@ class ResNet(nn.Module):
                     base_width=self.base_width,
                     dilation=self.dilation,
                     norm_layer=norm_layer,
+                    get_uncertain = self.get_uncertain,
+                    p = self.p
                 )
             )
 
