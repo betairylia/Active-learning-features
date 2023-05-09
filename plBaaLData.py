@@ -124,8 +124,8 @@ def ActiveLearningDataModuleWrapper(base: pl.LightningDataModule):
             return super()
 
         def predict_dataloader(self, *args: Any, **kwargs: Any) -> DataLoader:
-            test_loader = copy.copy(super().test_dataloader(*args, **kwargs))
-            al_loader = ChangeLoaderDataset(test_loader, self.filter_unlabelled_data(self._dataset.pool), False)
+            train_loader = copy.copy(super().train_dataloader(*args, **kwargs))
+            al_loader = ChangeLoaderDataset(train_loader, self.filter_unlabelled_data(self._dataset.pool), False)
             return al_loader
         
         @property

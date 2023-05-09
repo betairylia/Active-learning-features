@@ -61,6 +61,10 @@ class ndrop_InferenceMCDropoutTask(flash.Task):
     
 class ndrop_ActiveLearningLoop(ActiveLearningLoop):
     
+    def __init__(self, daug_trials, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.daug_trials = daug_trials
+    
     def on_run_start(self, *args, **kwargs) -> None:
         # assert isinstance(self.trainer.datamodule, ActiveLearningDataModule)
         if self._datamodule_state_dict is not None:
@@ -74,6 +78,34 @@ class ndrop_ActiveLearningLoop(ActiveLearningLoop):
         
         # We need to set-up AL datasets eariler.
         self.trainer.datamodule.setup()
+        
+    def combine_evidences(self, evidences):
+        
+        result = []
+        
+        # for i in range(N_batches)
+        for i in range(len(evidences[0])):
+            
+            # Skip if no evidence
+            if evidences[0][i] is None:
+                continue
+            
+            row = []
+            
+            # num of tensors included in evidences[0][i]
+            for j in range(len(evidences[0][i])):
+                
+                col = []
+                # for evidence in evidences "num of prediction loops / per DA"
+                for evidence in evidences:
+                    col.append(evidence[i][j])
+
+                if len(col) > 0:
+                    row.append(torch.cat(col, -1))
+            
+            result.append(row)
+        
+        return result
         
     def advance(self, *args, **kwargs) -> None:
 
@@ -91,20 +123,34 @@ class ndrop_ActiveLearningLoop(ActiveLearningLoop):
                 metrics_AL = metrics[0]
                 metrics_AL = {('AL/%s'%k): metrics_AL[k] for k in metrics_AL}
                 
-                stddrop, stdndrop = self.inference_model.EvalStddevEpisode()
-                if stddrop is not None:
-                    metrics_AL['AL/std-Dropout'] = stddrop
-                    metrics_AL['AL/std-MonteCarlo'] = stdndrop
+#                 stddrop, stdndrop = self.inference_model.EvalStddevEpisode()
+#                 if stddrop is not None:
+#                     metrics_AL['AL/std-Dropout'] = stddrop
+#                     metrics_AL['AL/std-MonteCarlo'] = stdndrop
                 
                 # Also log current number of labelled samples
                 metrics_AL['AL/labelled'] = self.trainer.datamodule._dataset.n_labelled
                 self.trainer.logger.log_metrics(metrics_AL, step = self.progress.current.completed) # Use current step for AL
                 # self.trainer.logger.log_metrics(metrics_AL) # Use current step for AL
 
+        # Handle querying
         if self.trainer.datamodule.has_unlabelled_data:
+            
+            # Reset for new query round
             self._reset_predicting()
             self.trainer.datamodule.prediction_reset()
-            evidences = self.trainer.predict_loop.run()
+            
+            # Collect evidences
+            evidences = []
+            
+            # Collect several trials for each unlabeled data-point (considering data augmentation)
+            for i in range(self.daug_trials):
+                evidence = self.trainer.predict_loop.run()
+                evidences.append(evidence)
+            
+            # Combine them along the "N_iter" axis (originally for MC-dropout)
+            evidences = self.combine_evidences(evidences)
+            
             qIm = self.trainer.datamodule.label(
                 evidences=evidences,
                 net=self._lightning_module,

@@ -25,6 +25,7 @@ from functools import partial
 
 from plBaaLData import ActiveLearningDataModuleWrapper
 from pl_bolts.datamodules import MNISTDataModule, CIFAR10DataModule, FashionMNISTDataModule
+from datamodules import SVHNDataModule
 
 import pytorch_lightning as pl
 
@@ -39,6 +40,8 @@ from resnet import resnet18
 import math
 from weight_drop import *
 
+import torchvision.transforms as transforms
+
 #################################################
 
 IMG_SIZE = 28
@@ -48,8 +51,9 @@ IMG_SIZE = 28
 #     def num_classes(self):
 #         return 10
 
-def get_data_module(heuristic, data_path, budget=16, initial=32):    
-    active_dm = ActiveLearningDataModuleWrapper(CIFAR10DataModule)(
+def get_data_module(heuristic, data_path, budget=16, initial=32, data_augmentation=True):    
+    active_dm = ActiveLearningDataModuleWrapper(SVHNDataModule)(
+#     active_dm = ActiveLearningDataModuleWrapper(CIFAR10DataModule)(
 #     active_dm = ActiveLearningDataModuleWrapper(FashionMNISTDataModule)(
 #     active_dm = ActiveLearningDataModuleWrapper(MNISTDataModule)(
         data_dir = "./data",
@@ -62,6 +66,39 @@ def get_data_module(heuristic, data_path, budget=16, initial=32):
         query_size=budget,
         val_split=0.01
     )
+    
+    # CIFAR-10 / 32x32x3 images
+    if data_augmentation == True:
+        
+        active_dm.train_transforms = transforms.Compose([
+            transforms.RandomResizedCrop(32, (0.4, 1.0)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[x / 255.0 for x in [125.3, 123.0, 113.9]],
+                std=[x / 255.0 for x in [63.0, 62.1, 66.7]]
+            )
+        ])
+        
+        active_dm.val_transforms = transforms.Compose([
+            transforms.Resize(40),
+            transforms.CenterCrop(32),
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[x / 255.0 for x in [125.3, 123.0, 113.9]],
+                std=[x / 255.0 for x in [63.0, 62.1, 66.7]]
+            )
+        ])
+        
+        active_dm.test_transforms = transforms.Compose([
+            transforms.Resize(40),
+            transforms.CenterCrop(32),
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[x / 255.0 for x in [125.3, 123.0, 113.9]],
+                std=[x / 255.0 for x in [63.0, 62.1, 66.7]]
+            )
+        ])
     
     return active_dm
 
@@ -216,87 +253,88 @@ class SimpleModel(LightningModule):
                 torch.stack(fin).permute((1, 2, 0)) # [N_sample, dim, N_iter]
             )
 
-    def checkStddev(self):
+#     def checkStddev(self):
         
-        if self.varval_loader_getter is not None:
-            with torch.no_grad():
+#         if self.varval_loader_getter is not None:
+#             with torch.no_grad():
                 
-                if self.varval_loader_cached is not None:
-                    varval = self.varval_loader_getter()
-                else:
-                    varval = self.varval_loader_getter()
-                    if self.varval_loader_cache:
-                        self.varval_loader_cached = varval
+#                 if self.varval_loader_cached is not None:
+#                     varval = self.varval_loader_getter()
+#                 else:
+#                     varval = self.varval_loader_getter()
+#                     if self.varval_loader_cache:
+#                         self.varval_loader_cached = varval
                 
-                N = len(varval.dataset)
+#                 N = len(varval.dataset)
                 
-                # Dropout
-                std_dropout = 0
-                for batch in varval:
-                    batch = [x.to(self.device) for x in batch]
-                    out = []
-                    for _ in range(self.inference_iteration):
-                        (logits, features) = self.query_step(batch, 0)
-                        # logits: [Nb, C]
-                        out.append(logits)
-                    out = torch.stack(out, dim = 0) # out: [I, Nb, C]
-                    std_dropout += torch.std(out, dim = 0).sum()
-#                     logits_dropout.append(out)
+#                 # Dropout
+#                 std_dropout = 0
+#                 for batch in varval:
+#                     batch = [x.to(self.device) for x in batch]
+#                     out = []
+#                     for _ in range(self.inference_iteration):
+#                         (logits, features) = self.query_step(batch, 0)
+#                         # logits: [Nb, C]
+#                         out.append(logits)
+#                     out = torch.stack(out, dim = 0) # out: [I, Nb, C]
+#                     std_dropout += torch.std(out, dim = 0).sum()
+# #                     logits_dropout.append(out)
                     
-#                 logits_dropout = torch.cat(logits_dropout, dim = 1) # [I, Nx, C]
+# #                 logits_dropout = torch.cat(logits_dropout, dim = 1) # [I, Nx, C]
                 
-                # Non-dropout
-                std_nondropout = 0
-                width = 8192 * 0.5
-                for batch in varval:
-                    out = []
-                    batch = [x.to(self.device) for x in batch]
-                    x, _ = batch
-                    feat = self.net_no_dropout(x)
+#                 # Non-dropout
+#                 std_nondropout = 0
+#                 width = 8192 * 0.5
+#                 for batch in varval:
+#                     out = []
+#                     batch = [x.to(self.device) for x in batch]
+#                     x, _ = batch
+#                     feat = self.net_no_dropout(x)
 
-                    # Activation
-                    assert len(self.head) == 1
-                    feat_aligned = feat.unsqueeze(-1) # [bs, hidden_dim, 1]
-                    last_layer = self.head[-1]
-                    activation = feat_aligned * last_layer.weight.permute(1, 0).unsqueeze(0) + last_layer.bias[None, None, :] # [bs, hidden_dim, out_dim]
+#                     # Activation
+#                     assert len(self.head) == 1
+#                     feat_aligned = feat.unsqueeze(-1) # [bs, hidden_dim, 1]
+#                     last_layer = self.head[-1]
+#                     activation = feat_aligned * last_layer.weight.permute(1, 0).unsqueeze(0) + last_layer.bias[None, None, :] # [bs, hidden_dim, out_dim]
                     
-                    # activation: [Nb, I, C]
-                    std = torch.sqrt(((activation - activation.mean(dim = 1, keepdims = True)) ** 2) / width).sum()
-                    std_nondropout += std
+#                     # activation: [Nb, I, C]
+#                     std = torch.sqrt(((activation - activation.mean(dim = 1, keepdims = True)) ** 2) / width).sum()
+#                     std_nondropout += std
                     
-#                 self.log("Test set stddev norm", {"Dropout": std_dropout / N, "Monte-Carlo": std_nondropout / N})
-        return std_dropout / N, std_nondropout / N
+# #                 self.log("Test set stddev norm", {"Dropout": std_dropout / N, "Monte-Carlo": std_nondropout / N})
+#         return std_dropout / N, std_nondropout / N
         
-    def EvalStddevEpisode(self):
+#     def EvalStddevEpisode(self):
     
-        if not self.perEpisode:
-            return None, None
+#         if not self.perEpisode:
+#             return None, None
         
-        training = self.training
-        self.eval()
+#         training = self.training
+#         self.eval()
         
-        stddrop, stdndrop = self.checkStddev()
-#         self.log("stddev-Episode", {"Dropout": stddrop, "Monte-Carlo": stdndrop})
+#         stddrop, stdndrop = self.checkStddev()
+# #         self.log("stddev-Episode", {"Dropout": stddrop, "Monte-Carlo": stdndrop})
 
-        if training:
-            self.train()
+#         if training:
+#             self.train()
             
-        return stddrop, stdndrop
+#         return stddrop, stdndrop
         
-    def on_train_epoch_end(self):
+#     def on_train_epoch_end(self):
         
-        if not self.perEpoch:
-            return
+#         if not self.perEpoch:
+#             return
         
-        self.eval()
+#         self.eval()
         
-        stddrop, stdndrop = self.checkStddev()
-        self.log("stddev-Epoch", {"Dropout": stddrop, "Monte-Carlo": stdndrop})
+#         stddrop, stdndrop = self.checkStddev()
+#         self.log("stddev-Epoch", {"Dropout": stddrop, "Monte-Carlo": stdndrop})
                 
-        self.train()
+#         self.train()
         
     def configure_optimizers(self):
         return torch.optim.AdamW(self.parameters())
+#         return torch.optim.AdamW(self.parameters(), lr = 3e-4, weight_decay = 1e-5)
 
     
     
@@ -378,8 +416,11 @@ def main(hparams):
     seed = hparams.seed * (hparams.runid + 1)
     pl.seed_everything(seed)
     
-    active_dm = get_data_module(hparams.heuristic, './data', hparams.budget, hparams.initial)
+    active_dm = get_data_module(hparams.heuristic, './data', hparams.budget, hparams.initial, data_augmentation = (hparams.dataAug > 0))
     heuristic = active_dm.heuristic
+    
+    if hparams.heuristic == "mcgradient-batched-fast":
+        heuristic.set_trial_num(hparams.augTrials)
 
     # Init our model
     model = models_dict[hparams.model](
@@ -388,12 +429,14 @@ def main(hparams):
         inference_iteration = hparams.inference_iteration,
         variance_val_loader_getter = lambda: active_dm.test_dataloader()
     )
+    
     # model = get_model(active_dm)
 
     if hasattr(heuristic, "register_model"):
-        heuristic.register_model(model)
+        heuristic.register_model(hparams, model)
 
     aloop = ndrop_ActiveLearningLoop(
+        daug_trials = hparams.augTrials,
         label_epoch_frequency = hparams.epochs_per_query,
         inference_iteration = hparams.inference_iteration
     )
@@ -402,7 +445,7 @@ def main(hparams):
     if wbgroup is None:
         wandb_logger = WandbLogger(
             project="AL-features",
-            config = vars(hparams)
+            config = vars(hparams),
         )
     else:
         wandb_logger = WandbLogger(
@@ -414,10 +457,9 @@ def main(hparams):
     # Initialize a trainer
     trainer = Trainer(
         gpus=1,
-        max_epochs=hparams.rounds, # 1024 labels in total
+        max_epochs=hparams.rounds,
         progress_bar_refresh_rate=20,
         enable_checkpointing=False,
-
 
         # limit_val_batches = 0.0,
 
@@ -454,14 +496,26 @@ if __name__ == "__main__":
     parser.add_argument('--initial', type=int, default=32, help="Initial labels")
     parser.add_argument('--total_queries', type=int, default=1024, help="Total queries after training finished")
     
+    # Training
+    parser.add_argument('--dataAug', type=int, default=1, help="Data augmentation on(1) / off(0).")
+    parser.add_argument('--augTrials', type=int, default=4, help="Trials per augmentation (ignored if augmentation disabled)")
+    
+    # Querier
+    parser.add_argument('--qPropotion', type=float, default=0.25, help="% of data visible to mcgradient queriers")
+    
     parser = parent_parser.add_argument_group("Run metadata / WandB sweeps")
     parser.add_argument('--keyargs', type=str, default="", help='Key variables in HP tune, splitted in commas')
     parser.add_argument('--aaarunid', type=int, default=0, help='Run ID.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed. will be multiplied with runid+1 to ensure different RNGs for different runs.')
-    
+
     args = parent_parser.parse_args()
+    
+    # Process arguments a bit
     args.runid = args.aaarunid
     del(args.aaarunid)
+    
+    if args.dataAug == 0:
+        args.augTrials = 1
 
     # Compute rounds
     args.rounds = (args.total_queries) // args.budget
