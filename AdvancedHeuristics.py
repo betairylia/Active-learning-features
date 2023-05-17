@@ -554,7 +554,59 @@ class MonteCarloBoundBatchedFast(MonteCarloBound):
         indices = np.random.choice(np.argsort(avg_scores)[-num_random_pool:], size = (budget, ), replace = False) # Largest scores being picked
 
         return indices
+
+# TODO: How ??
+# class LinearizedDropout(AdvancedAbstractHeuristic):
+
+#     N_dropout_trials: int = 10
+
+#     def custom_prediction_step(self, model, batch, batch_idx):
+        
+#         self.disable_dropout(model)
+#         self.record(model)
+
+#         # For recording
+#         logit = model(batch)
+
+#         self.enable_dropout(model)
+#         self.replay(model)
+
+#         logits = []
+#         for i in range(self.N_dropout_trials):
+        
+#             logit = model(batch)
+#             logits.append(logit.detach().cpu())
+
+#         return torch.stack(logits, dim = 0)
     
+#     def custom_query_step(self, budget, evidences, dataloader, model):
+
+
+#     def enable_dropout(self, m):
+#         for each_module in m.modules():
+#             if each_module.__class__.__name__.startswith('Dropout'):
+#                 each_module.train()
+            
+#     def disable_dropout(self, m):
+#         for each_module in m.modules():
+#             if each_module.__class__.__name__.startswith('Dropout'):
+#                 each_module.eval()
+                
+#     def record(self, m):
+#         for each_module in m.modules():
+#             if each_module.__class__.__name__.startswith('Recorder'):
+#                 each_module.switchToRecord()
+                
+#     def replay(self, m):
+#         for each_module in m.modules():
+#             if each_module.__class__.__name__.startswith('Recorder'):
+#                 each_module.switchToReplay()
+                
+#     def recorder_identity(self, m):
+#         for each_module in m.modules():
+#             if each_module.__class__.__name__.startswith('Recorder'):
+#                 each_module.switchToIdentity()
+
 class ReweightedFeatureDistTest(AdvancedAbstractHeuristic):
     # TODO
     pass
