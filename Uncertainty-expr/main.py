@@ -26,6 +26,8 @@ from pytorch_lightning.loggers import WandbLogger
 from data_uncertainty import MNIST_UncertaintyDM, CIFAR10_UncertaintyDM #, FashionMNIST_UncertaintyDM, SVHN_UncertaintyDM
 from recorder import Recorder
 
+from nets import net_dict
+
 import math
 # from resnet import resnet18
 # from weight_drop import *
@@ -38,11 +40,11 @@ import math
 #         return 10
 
 input_size_dict = {
-    'mnist': [1, 28, 28],
+    'mnist': [1, 32, 32], # Resized
     'cifar10': [3, 32, 32],
     'cifar100': [3, 32, 32],
     'svhn': [3, 32, 32],
-    'fashionmnist': [1, 28, 28],
+    'fashionmnist': [1, 32, 32], # Resized
     'imagenet': [3, 224, 224],
     'tinyimagenet': [3, 64, 64],
     'stl10': [3, 96, 96],
@@ -61,6 +63,20 @@ def get_data_module(dataset_name, batch_size, data_augmentation=True, num_worker
     
     return main_dm, input_size_dict[dataset_name]
 
+def BestAccuracySweep(num_sweeps = 256):
+    def foo(scores, labels):
+        min_score = scores.min()
+        max_score = scores.max()
+        best_acc = 0
+        best_threshold = 0
+        for threshold in torch.linspace(min_score, max_score, num_sweeps):
+            acc = ((scores >= threshold) == labels).float().mean()
+            if acc > best_acc:
+                best_acc = acc
+                best_threshold = threshold
+        return best_acc, best_threshold
+    return foo
+
 #################################################################
 
 class SimpleModel(LightningModule):
@@ -72,7 +88,14 @@ class SimpleModel(LightningModule):
         # Construct networks
         self.hidden_dim = 2048
         self.output_dim = output_dim
-        self.net, self.head = self.getNets(input_shape)
+
+        self.net_factory = net_dict[args.net]()
+        self.net, self.head = self.net_factory.getNets(
+            input_shape, 
+            [output_dim],
+            hidden_dim = args.hidden_dim,
+            dropout_rate = args.dropout_rate
+        )
         
         if args.loss == 'mse':
             self.loss = lambda x, y: F.mse_loss(x, F.one_hot(y, 10).detach().float())
@@ -90,50 +113,13 @@ class SimpleModel(LightningModule):
         # TODO: Check which one fits the task better
         # self.uncertainty_auroc = AUROC(task="binary")
         self.uncertainty_auroc = AveragePrecision(task="binary")
+        self.uncertainty_acc = BestAccuracySweep()
 
         self.val_uncertainty_scores = []
         self.val_uncertainty_labels = []
-        
-    def initNets(self, net):
 
-        def weights_init_wrapper(scale = 1.0):
-            def weights_init(m):
-                if isinstance(m, nn.Linear):
-                    torch.nn.init.normal_(m.weight, mean = 0.0, std = (1 / math.sqrt(m.weight.shape[0])) * scale)
-                    torch.nn.init.constant_(m.bias, 0)
-            return weights_init
-
-        net.apply(weights_init_wrapper(scale = self.args.initialization_scale))
-
-    def getNets(self, input_shape):
-        
-        # Compute the input size from input_shape
-        flatten_size = 1
-        for dim in input_shape:
-            flatten_size *= dim
-
-        def getblock(d_in, d_out, act = torch.nn.ReLU):
-            return [
-                torch.nn.Linear(d_in, d_out),
-                Recorder(act()) if act is not None else torch.nn.Identity(),
-                torch.nn.Dropout(p = self.args.dropout_rate),
-            ]
-
-        net = torch.nn.Sequential(
-            torch.nn.Flatten(),
-            *getblock(flatten_size, self.hidden_dim),
-            *getblock(self.hidden_dim, self.hidden_dim),
-            *getblock(self.hidden_dim, self.hidden_dim),
-        )
-        
-        head = torch.nn.Sequential(
-            *getblock(self.hidden_dim, self.output_dim, act = None)
-        )
-
-        # self.initNets(net)
-        # self.initNets(head)
-        
-        return net, head
+        print("Model initialized")
+        print(self)
         
     def forward(self, x):
 
@@ -174,14 +160,19 @@ class SimpleModel(LightningModule):
 
         # Calling self.log will surface up scalars for you in TensorBoard
         self.log("val_loss", loss, prog_bar=False)
-        self.log("val_acc", acc, prog_bar=False)
+        self.log("val_acc", acc, prog_bar=True)
         return loss
 
     def on_validation_epoch_end(self):
         self.val_uncertainty_scores = torch.cat(self.val_uncertainty_scores, dim = 0)
         self.val_uncertainty_labels = torch.cat(self.val_uncertainty_labels, dim = 0)
+        
+        best_uncertain_acc, best_uncertain_th = self.uncertainty_acc(self.  val_uncertainty_scores, self.val_uncertainty_labels.squeeze())
+        self.log("val_uncertain_acc", best_uncertain_acc, prog_bar=True)
+
         self.uncertainty_auroc(self.val_uncertainty_scores, self.val_uncertainty_labels.squeeze())
-        self.log("val_auroc", self.uncertainty_auroc, prog_bar=True)
+        self.log("val_auroc", self.uncertainty_auroc, prog_bar=False)
+
         self.val_uncertainty_scores = []
         self.val_uncertainty_labels = []
 
@@ -231,26 +222,32 @@ class MCDropoutModel(SimpleModel):
         self.enable_dropout(self.net)
         self.enable_dropout(self.head)
 
+        # self.disable_dropout(self.net)
+        # self.disable_dropout(self.head)
+
         if self.training:
             logits = self.head(self.net(x))
             return logits, None
         else:
-            logits = torch.zeros((x.shape[0], self.output_dim), device = x.device)
+            logits = []
             probs = []
             for i in range(self.args.dropout_iters):
-                logits += self.head(self.net(x))
-                pred_prob = F.softmax(logits, dim = 1)
+                logits.append(self.head(self.net(x)))
+                pred_prob = F.softmax(logits[-1], dim = 1)
                 probs.append(pred_prob)
-            logits /= self.args.dropout_iters
+            
+            logits = torch.stack(logits, dim = 0)
             probs = torch.stack(probs, dim = 0)
             
             # Compute the MI between prediction and parameters
-            probs_marginal = torch.mean(probs, dim = 0)
-            entropy_marginal = -torch.sum(probs_marginal * torch.log(probs_marginal + 1e-8), dim = 1)
-            entropy_conditional = -torch.sum(probs * torch.log(probs + 1e-8), dim = 2).mean(dim = 0)
-            bald_objective = entropy_marginal - entropy_conditional
+            # probs_marginal = torch.mean(probs, dim = 0)
+            # entropy_marginal = -torch.sum(probs_marginal * torch.log(probs_marginal + 1e-8), dim = 1)
+            # entropy_conditional = -torch.sum(probs * torch.log(probs + 1e-8), dim = 2).mean(dim = 0)
+            # bald_objective = entropy_marginal - entropy_conditional
 
-            return logits, bald_objective
+            uncertainty = torch.std(logits, dim = 0).mean(dim = 1)
+
+            return logits.mean(dim = 0), uncertainty
 
 class TestTimeOnly_ApproximateDropoutModel(SimpleModel):
 
@@ -282,25 +279,27 @@ class TestTimeOnly_ApproximateDropoutModel(SimpleModel):
             self.replay(self.net)
             self.replay(self.head)
 
-            logits = torch.zeros_like(_logits)
             probs = []
+            logits = []
             for i in range(self.args.dropout_iters):
-                logits += self.head(self.net(x))
-                pred_prob = F.softmax(logits, dim = 1)
+                logits.append(self.head(self.net(x)))
+                pred_prob = F.softmax(logits[-1], dim = 1)
                 probs.append(pred_prob)
-            logits /= self.args.dropout_iters
+
+            logits = torch.stack(logits, dim = 0)
             probs = torch.stack(probs, dim = 0)
             
             # Compute the MI between prediction and parameters
-            probs_marginal = torch.mean(probs, dim = 0)
-            entropy_marginal = -torch.sum(probs_marginal * torch.log(probs_marginal + 1e-8), dim = 1)
-            entropy_conditional = -torch.sum(probs * torch.log(probs + 1e-8), dim = 2).mean(dim = 0)
-            bald_objective = entropy_marginal - entropy_conditional
+            # probs_marginal = torch.mean(probs, dim = 0)
+            # entropy_marginal = -torch.sum(probs_marginal * torch.log(probs_marginal + 1e-8), dim = 1)
+            # entropy_conditional = -torch.sum(probs * torch.log(probs + 1e-8), dim = 2).mean(dim = 0)
+            # bald_objective = entropy_marginal - entropy_conditional
+            uncertainty = torch.std(logits, dim = 0).mean(dim = 1)
 
             self.recorder_identity(self.net)
             self.recorder_identity(self.head)
 
-            return logits, bald_objective
+            return logits.mean(dim = 0), uncertainty
 
 models_dict =\
 {
@@ -369,6 +368,7 @@ if __name__ == "__main__":
     parser.add_argument("--epochs_per_query", type=int, default=25)
     parser.add_argument("--inference_iteration", type=int, default=20)
     parser.add_argument("--model", type=str, default='default')
+    parser.add_argument("--net", type=str, default='mlp')
     parser.add_argument("--dataset", type=str, default='mnist')
     parser.add_argument("--do_partial_train", type=int, default=1)
     parser.add_argument("--do_contamination", type=int, default=1)

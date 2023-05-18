@@ -46,11 +46,23 @@ class UncertaintyDataModule(pl.LightningDataModule):
             if self.do_contamination:
                 self.add_contaminate_dataset()
     
-            self.prune_train_set(self.n_labeled)
+            # self.prune_train_set(self.n_labeled)
+            self.balance_test_set()
 
     def prune_train_set(self, n_labeled):
         self.train_dataset_full = self.train_dataset
         self.train_dataset = torch.utils.data.Subset(self.train_dataset, np.random.choice(len(self.train_dataset), size = (n_labeled,)))
+
+    def balance_test_set(self):
+        inlier_indices_test = [i for i, (x, y, o) in enumerate(self.test_dataset) if o == 0]
+        outlier_indices_test = [i for i, (x, y, o) in enumerate(self.test_dataset) if o == 1]
+        self.n_raw_inliers = len(inlier_indices_test)
+        self.n_raw_outliers = len(self.test_dataset) - self.n_raw_inliers
+
+        assert self.n_raw_outliers > 0 and self.n_raw_inliers > 0 and len(self.test_dataset) == self.n_raw_inliers + len(outlier_indices_test)
+
+        picked_inliers = np.random.choice(inlier_indices_test, size = (self.n_raw_outliers,))
+        self.test_dataset = torch.utils.data.Subset(self.test_dataset, [*picked_inliers, *outlier_indices_test])
 
     def remove_classes_from_train_set(self):
         
@@ -97,17 +109,33 @@ class UncertaintyDataModule(pl.LightningDataModule):
 
     def add_contaminate_dataset(self):
 
-        n_contaminate = 1024
+        n_contaminate = len(self.test_dataset)
 
-        class ContaminateDataset(torch.utils.data.Dataset):
-
-            def __init__(self, dataset, is_contamination = 1):
+        class UncertaintyDataset(torch.utils.data.Dataset):
+            def __init__(self, dataset, is_contamination = 0):
                 self.dataset = dataset
                 self.is_contamination = is_contamination
 
             def __getitem__(self, index):
                 d, l = self.dataset[index]
-                return d, torch.LongTensor([l])[0], self.is_contamination
+                return d, l, self.is_contamination
+
+            def __len__(self):
+                return len(self.dataset)
+
+        class ContaminateDataset(torch.utils.data.Dataset):
+
+            def __init__(self, dataset):
+                self.dataset = dataset
+                self.additional_transform = transforms.Compose([
+                    transforms.ToPILImage(),
+                    transforms.GaussianBlur(kernel_size = 7, sigma = 2.0),
+                    transforms.ToTensor()
+                ])
+
+            def __getitem__(self, index):
+                d, l = self.dataset[index]
+                return self.additional_transform(d), torch.LongTensor([l])[0]
 
             def __len__(self):
                 return len(self.dataset)
@@ -128,17 +156,11 @@ class UncertaintyDataModule(pl.LightningDataModule):
             
             def __len__(self):
                 return self.d1_len + self.d2_len
-        
-        # TODO: Choose contamination dataset
-        # Mix with CIFAR-greyscale
-        transform = transforms.Compose(
-            [transforms.Grayscale(num_output_channels=3),
-            # transforms.Resize((28, 28)),
-            transforms.ToTensor(),
-            transforms.Normalize((0.5,), (0.5,))])
-        self.test_dataset_contaminate = datasets.CIFAR10(root="../data", transform=transform, train=False, download=True)
-        self.test_dataset_contaminate = ContaminateDataset(self.test_dataset_contaminate, is_contamination = 1)
-        self.test_dataset_contaminate = torch.utils.data.Subset(self.test_dataset_contaminate, np.random.choice(len(self.test_dataset_contaminate), size = (n_contaminate,)))
+
+        self.train_dataset = UncertaintyDataset(self.train_dataset, is_contamination = 0)
+
+        self.test_dataset_contaminate = UncertaintyDataset(ContaminateDataset(self.test_dataset), is_contamination = 1)
+        self.test_dataset = UncertaintyDataset(self.test_dataset, is_contamination = 0)
         self.test_dataset_uncontaminated = self.test_dataset
         
         self.test_dataset = CombinedDataset(self.test_dataset, self.test_dataset_contaminate)
@@ -163,6 +185,7 @@ class MNIST_UncertaintyDM(UncertaintyDataModule):
 
     def get_standard_transforms(self):
         return transforms.Compose([
+            transforms.Resize((32, 32)),
             transforms.ToTensor(),
             transforms.Normalize((0.5,), (0.5,))
         ])
