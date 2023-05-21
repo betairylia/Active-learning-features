@@ -45,6 +45,10 @@ class MLPFactory(NetFactoryBase):
                 Recorder(act()) if act is not None else torch.nn.Identity(),
                 torch.nn.Dropout(p = dropout_rate),
             ]
+            # return [
+            #     torch.nn.Linear(d_in, d_out),
+            #     act() if act is not None else torch.nn.Identity(),
+            # ]
 
         net = torch.nn.Sequential(
             torch.nn.Flatten(),
@@ -79,14 +83,15 @@ class CNNFactory(NetFactoryBase):
         norm_layer = torch.nn.Identity
         nd = hidden_dim // ((H//8) * (W//8))
         net = torch.nn.Sequential(
-            *self.WrappedConvolutionalBlock(H, W, C, nd // 4, kernel = 5, norm = norm_layer, p = 0), # 32x32
+            *self.WrappedConvolutionalBlock(H, W, C, nd // 4, kernel = 5, norm = norm_layer, p = p), # 32x32
             *self.WrappedConvolutionalBlock(H, W, nd // 4, nd // 2, kernel = 3, stride = 2, norm = norm_layer, p = p), # 16x16
             *self.WrappedConvolutionalBlock(H // 2, W // 2, nd // 2, nd // 2, kernel = 3, norm = norm_layer, p = p), # 16x16
             *self.WrappedConvolutionalBlock(H // 2, W // 2, nd // 2, nd, kernel = 3, stride = 2, norm = norm_layer, p = p), # 8x8
             *self.WrappedConvolutionalBlock(H // 4, W // 4, nd, nd, kernel = 3, norm = norm_layer, p = p), # 8x8
             *self.WrappedConvolutionalBlock(H // 4, W // 4, nd, nd, kernel = 3, stride = 2, norm = norm_layer, p = p), # 4x4
-            *self.WrappedConvolutionalBlock(H // 8, W // 8, nd, nd, kernel = 3, norm = norm_layer, p = p), # 4x4
+            *self.WrappedConvolutionalBlock(H // 8, W // 8, nd, nd, kernel = 3, norm = norm_layer, p = 0), # 4x4
             torch.nn.Flatten(),
+            nn.Dropout(p = p),
         )
         
         head = torch.nn.Sequential(

@@ -98,7 +98,7 @@ class SimpleModel(LightningModule):
         )
         
         if args.loss == 'mse':
-            self.loss = lambda x, y: F.mse_loss(x, F.one_hot(y, 10).detach().float())
+            self.loss = lambda x, y: F.mse_loss(x, F.one_hot(y, output_dim).detach().float())
         elif args.loss == 'cent':
             self.loss = nn.CrossEntropyLoss()
 
@@ -146,7 +146,7 @@ class SimpleModel(LightningModule):
     
     def validation_step(self, batch, batch_idx):
         x, y, o = batch
-        logits = self(x)
+        # logits = self(x)
         # loss = F.cross_entropy(logits, y)
         logits, uncertainty = self(x)
 
@@ -167,11 +167,16 @@ class SimpleModel(LightningModule):
         self.val_uncertainty_scores = torch.cat(self.val_uncertainty_scores, dim = 0)
         self.val_uncertainty_labels = torch.cat(self.val_uncertainty_labels, dim = 0)
         
-        best_uncertain_acc, best_uncertain_th = self.uncertainty_acc(self.  val_uncertainty_scores, self.val_uncertainty_labels.squeeze())
+        best_uncertain_acc, best_uncertain_th = self.uncertainty_acc(self.val_uncertainty_scores, self.val_uncertainty_labels.squeeze())
         self.log("val_uncertain_acc", best_uncertain_acc, prog_bar=True)
 
         self.uncertainty_auroc(self.val_uncertainty_scores, self.val_uncertainty_labels.squeeze())
         self.log("val_auroc", self.uncertainty_auroc, prog_bar=False)
+
+        mean_uncertainty_seen = self.val_uncertainty_scores[self.val_uncertainty_labels.squeeze() == 0].mean()
+        mean_uncertainty_unseen = self.val_uncertainty_scores[self.val_uncertainty_labels.squeeze() == 1].mean()
+        self.log("val_uncertain_seen", mean_uncertainty_seen, prog_bar=False)
+        self.log("val_uncertain_unseen", mean_uncertainty_unseen, prog_bar=False)
 
         self.val_uncertainty_scores = []
         self.val_uncertainty_labels = []
@@ -185,7 +190,8 @@ class SimpleModel(LightningModule):
         return self.on_validation_epoch_end()
         
     def configure_optimizers(self):
-        return torch.optim.AdamW(self.parameters())
+        # return torch.optim.AdamW(self.parameters())
+        return torch.optim.SGD(self.parameters(), lr = 1e-3, momentum = 0.9, weight_decay = 1e-5)
 #         return torch.optim.AdamW(self.parameters(), lr = 3e-4, weight_decay = 1e-5)
 
     def enable_dropout(self, m):
@@ -214,6 +220,71 @@ class SimpleModel(LightningModule):
         for each_module in m.modules():
             if each_module.__class__.__name__.startswith('Recorder'):
                 each_module.switchToIdentity()
+
+# Create a model which is an ensemble of smaller networks (summate their outputs)
+class EnsembleNets(nn.Module):
+    def __init__(self, nets, sums = True, split_input = False, reduce_method = 'sum'):
+        super().__init__()
+        self.nets = nn.ParameterList(nets)
+        self.sums = sums
+        self.split_input = split_input
+
+        self.reduce = reduce_method
+        if self.reduce == 'sum':
+            self.reduce = torch.sum
+        elif self.reduce == 'mean':
+            self.reduce = torch.mean
+        else:
+            print("Ensemble Nets ERROR: Unsupported reduce method %s" % reduce_method)
+
+    def forward(self, x, override_return_individuals = False):
+
+        if self.split_input:
+            # shape of x: (num_nets, batch_size, input_size)
+            outputs = [net(x_i) for net, x_i in zip(self.nets, x)]
+        else:
+            # shape of x: (batch_size, input_size)
+            outputs = [net(x) for net in self.nets]
+        
+        if self.sums and not override_return_individuals:
+            return self.reduce(torch.stack(outputs), dim = 0)
+        else:
+            return torch.stack(outputs, dim = 0)
+
+class NaiveEnsembleModel(SimpleModel):
+
+    def __init__(self, args, input_shape, output_dim=10, ensemble_size = 4):
+
+        super().__init__(args, input_shape, output_dim)
+
+        self.ensemble_size = ensemble_size
+        self.ensemble_reduce = 'mean'
+        self.net, self.head = self.getNets_ensemble(input_shape, output_dim)
+        print(self)
+
+    def getNets_ensemble(self, input_shape, output_dim):
+        nets_and_heads = [
+            self.net_factory.getNets(
+                input_shape,
+                [output_dim],
+                hidden_dim = self.args.hidden_dim,
+                dropout_rate = self.args.dropout_rate
+            ) for _ in range(self.ensemble_size)
+        ]
+        net = EnsembleNets([net for net, _ in nets_and_heads], sums = False, reduce_method = self.ensemble_reduce)
+        head = EnsembleNets([head for _, head in nets_and_heads], sums = True, split_input = True, reduce_method = self.ensemble_reduce)
+        return net, head
+
+    def forward(self, x):
+
+        self.disable_dropout(self.net)
+        self.disable_dropout(self.head)
+
+        individuals = self.head(self.net(x), override_return_individuals = True)
+        individual_probs = F.softmax(individuals, dim = 2)
+        ensemble_std = torch.std(individual_probs, dim = 0).mean(1)
+
+        return self.head.reduce(individuals, dim = 0), ensemble_std
 
 class MCDropoutModel(SimpleModel):
     
@@ -246,18 +317,19 @@ class MCDropoutModel(SimpleModel):
             # bald_objective = entropy_marginal - entropy_conditional
 
             uncertainty = torch.std(logits, dim = 0).mean(dim = 1)
+            # uncertainty = probs.std(0).mean(1)
 
             return logits.mean(dim = 0), uncertainty
 
 class TestTimeOnly_ApproximateDropoutModel(SimpleModel):
 
-    dropout_iters: 10
-
     def forward(self, x):
 
         if self.training:
-            self.disable_dropout(self.net)
-            self.disable_dropout(self.head)
+            # self.disable_dropout(self.net)
+            # self.disable_dropout(self.head)
+            self.enable_dropout(self.net)
+            self.enable_dropout(self.head)
             logits = self.head(self.net(x))
             return logits, None
         else:
@@ -279,8 +351,8 @@ class TestTimeOnly_ApproximateDropoutModel(SimpleModel):
             self.replay(self.net)
             self.replay(self.head)
 
-            probs = []
             logits = []
+            probs = []
             for i in range(self.args.dropout_iters):
                 logits.append(self.head(self.net(x)))
                 pred_prob = F.softmax(logits[-1], dim = 1)
@@ -306,6 +378,7 @@ models_dict =\
     "default": SimpleModel,
     "mcdropout": MCDropoutModel,
     "tt_approx": TestTimeOnly_ApproximateDropoutModel,
+    "naive-ensemble": NaiveEnsembleModel,
 }
 
 #################################################################

@@ -10,6 +10,17 @@ import torchvision.transforms as transforms
 
 import numpy as np
 
+class AddGaussianNoise(object):
+    def __init__(self, mean=0., std=1.):
+        self.std = std
+        self.mean = mean
+        
+    def __call__(self, tensor):
+        return tensor + torch.randn(tensor.size()) * self.std + self.mean
+    
+    def __repr__(self):
+        return self.__class__.__name__ + '(mean={0}, std={1})'.format(self.mean, self.std)
+
 class UncertaintyDataModule(pl.LightningDataModule):
 
     def __init__(self, batch_size = 128, n_labeled = 16384, num_workers = 16, data_dir = './data', do_partial_train = True, do_contamination = True):
@@ -32,13 +43,18 @@ class UncertaintyDataModule(pl.LightningDataModule):
     def get_standard_transforms(self):
         pass
 
-    def get_datasets(self):
+    def get_train_dataset(self, transform):
+        pass
+
+    def get_test_dataset(self, transform):
         pass
 
     def setup(self, stage = None):
         if self.inited == False:
             self.inited = True
-            self.train_dataset, self.test_dataset, self.n_classes = self.get_dataset()
+            standard_transform = self.get_standard_transforms()
+            self.train_dataset = self.get_train_dataset(transform = standard_transform)
+            self.test_dataset = self.get_test_dataset(transform = standard_transform)
     
             if self.do_partial_train:
                 self.remove_classes_from_train_set()
@@ -46,7 +62,7 @@ class UncertaintyDataModule(pl.LightningDataModule):
             if self.do_contamination:
                 self.add_contaminate_dataset()
     
-            # self.prune_train_set(self.n_labeled)
+            self.prune_train_set(self.n_labeled)
             self.balance_test_set()
 
     def prune_train_set(self, n_labeled):
@@ -110,6 +126,7 @@ class UncertaintyDataModule(pl.LightningDataModule):
     def add_contaminate_dataset(self):
 
         n_contaminate = len(self.test_dataset)
+        dset_self = self
 
         class UncertaintyDataset(torch.utils.data.Dataset):
             def __init__(self, dataset, is_contamination = 0):
@@ -119,23 +136,6 @@ class UncertaintyDataModule(pl.LightningDataModule):
             def __getitem__(self, index):
                 d, l = self.dataset[index]
                 return d, l, self.is_contamination
-
-            def __len__(self):
-                return len(self.dataset)
-
-        class ContaminateDataset(torch.utils.data.Dataset):
-
-            def __init__(self, dataset):
-                self.dataset = dataset
-                self.additional_transform = transforms.Compose([
-                    transforms.ToPILImage(),
-                    transforms.GaussianBlur(kernel_size = 7, sigma = 2.0),
-                    transforms.ToTensor()
-                ])
-
-            def __getitem__(self, index):
-                d, l = self.dataset[index]
-                return self.additional_transform(d), torch.LongTensor([l])[0]
 
             def __len__(self):
                 return len(self.dataset)
@@ -159,8 +159,30 @@ class UncertaintyDataModule(pl.LightningDataModule):
 
         self.train_dataset = UncertaintyDataset(self.train_dataset, is_contamination = 0)
 
-        self.test_dataset_contaminate = UncertaintyDataset(ContaminateDataset(self.test_dataset), is_contamination = 1)
+        ###################################
+        # Create a contaminated test set
+        ###################################
+
+        contaminated_transforms = self.get_standard_transforms().transforms
+        idx_toTensor = [i for i, t in enumerate(contaminated_transforms) if isinstance(t, transforms.ToTensor)][0]
+        
+        # Insert Gaussian Blur before ToTensor
+        contaminated_transforms.insert(idx_toTensor, transforms.GaussianBlur(kernel_size = 7, sigma = 2.0))
+
+        # Insert Gaussian Noise at the end
+        contaminated_transforms.append(AddGaussianNoise(mean = 0.0, std = 0.2))
+
+        # Compose the transform
+        contaminated_transform = transforms.Compose(contaminated_transforms)
+
+        self.test_dataset_contaminate = self.get_test_dataset(transform = contaminated_transform)
+
+        ###################################
+        # Combine them
+        ###################################
+
         self.test_dataset = UncertaintyDataset(self.test_dataset, is_contamination = 0)
+        self.test_dataset_contaminate = UncertaintyDataset(self.test_dataset_contaminate, is_contamination = 1)
         self.test_dataset_uncontaminated = self.test_dataset
         
         self.test_dataset = CombinedDataset(self.test_dataset, self.test_dataset_contaminate)
@@ -178,6 +200,7 @@ class MNIST_UncertaintyDM(UncertaintyDataModule):
     
     def __init__(self, batch_size = 64, n_labeled = 16384, num_workers = 16, data_dir = "../data", do_partial_train = True, do_contamination = True):
         super().__init__(batch_size, n_labeled, num_workers, data_dir, do_partial_train, do_contamination)
+        self.n_classes = 10
 
     def prepare_data(self):
         datasets.MNIST(root = self.data_dir, train = True, download = True)
@@ -190,17 +213,21 @@ class MNIST_UncertaintyDM(UncertaintyDataModule):
             transforms.Normalize((0.5,), (0.5,))
         ])
 
-    def get_dataset(self):
-        transform = self.get_standard_transforms()
+    def get_train_dataset(self, transform):
         train_dataset = datasets.MNIST(root = self.data_dir, train = True, download = True, transform = transform)
-        test_dataset = datasets.MNIST(root = self.data_dir, train = False, download = True, transform = transform)
-        n_classes = 10
-        return train_dataset, test_dataset, n_classes
+        return train_dataset
     
+    def get_test_dataset(self, transform):
+        test_dataset = datasets.MNIST(root = self.data_dir, train = False, download = True, transform = transform)
+        return test_dataset
+
 class CIFAR10_UncertaintyDM(UncertaintyDataModule):
     
+    n_classes: 10
+
     def __init__(self, batch_size = 64, n_labeled = 16384, num_workers = 16, data_dir = "../data", do_partial_train = True, do_contamination = True):
         super().__init__(batch_size, n_labeled, num_workers, data_dir, do_partial_train, do_contamination)
+        self.n_classes = 10
 
     def prepare_data(self):
         datasets.CIFAR10(root = self.data_dir, train = True, download = True)
@@ -211,10 +238,9 @@ class CIFAR10_UncertaintyDM(UncertaintyDataModule):
             transforms.ToTensor(),
             transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
         ])
-
-    def get_dataset(self):
-        transform = self.get_standard_transforms()
-        train_dataset = datasets.CIFAR10(root = self.data_dir, train = True, download = True, transform = transform)
-        test_dataset = datasets.CIFAR10(root = self.data_dir, train = False, download = True, transform = transform)
-        n_classes = 10
-        return train_dataset, test_dataset, n_classes
+    
+    def get_train_dataset(self, transform):
+        return datasets.CIFAR10(root = self.data_dir, train = True, download = True, transform = transform)
+    
+    def get_test_dataset(self, transform):
+        return datasets.CIFAR10(root = self.data_dir, train = False, download = True, transform = transform)
