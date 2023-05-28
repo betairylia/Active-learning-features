@@ -286,6 +286,39 @@ class NaiveEnsembleModel(SimpleModel):
 
         return self.head.reduce(individuals, dim = 0), ensemble_std
 
+class NaiveDropoutModel(SimpleModel):
+    
+    def forward(self, x):
+
+        if self.training:
+            self.disable_dropout(self.net)
+            self.disable_dropout(self.head)
+            logits = self.head(self.net(x))
+            return logits, None
+        else:
+            self.enable_dropout(self.net)
+            self.enable_dropout(self.head)
+            logits = []
+            probs = []
+            for i in range(self.args.dropout_iters):
+                logits.append(self.head(self.net(x)))
+                pred_prob = F.softmax(logits[-1], dim = 1)
+                probs.append(pred_prob)
+            
+            logits = torch.stack(logits, dim = 0)
+            probs = torch.stack(probs, dim = 0)
+            
+            # Compute the MI between prediction and parameters
+            # probs_marginal = torch.mean(probs, dim = 0)
+            # entropy_marginal = -torch.sum(probs_marginal * torch.log(probs_marginal + 1e-8), dim = 1)
+            # entropy_conditional = -torch.sum(probs * torch.log(probs + 1e-8), dim = 2).mean(dim = 0)
+            # bald_objective = entropy_marginal - entropy_conditional
+
+            uncertainty = torch.std(logits, dim = 0).mean(dim = 1)
+            # uncertainty = probs.std(0).mean(1)
+
+            return logits.mean(dim = 0), uncertainty
+
 class MCDropoutModel(SimpleModel):
     
     def forward(self, x):
@@ -379,6 +412,7 @@ models_dict =\
     "mcdropout": MCDropoutModel,
     "tt_approx": TestTimeOnly_ApproximateDropoutModel,
     "naive-ensemble": NaiveEnsembleModel,
+    "naive-dropout": NaiveDropoutModel,
 }
 
 #################################################################
