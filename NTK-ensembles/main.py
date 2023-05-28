@@ -23,6 +23,8 @@ from utils import *
 
 from pytorch_lightning.loggers import WandbLogger
 
+from functorch import make_functional, vmap, vjp, jvp, jacrev
+
 import math
 # from resnet import resnet18
 # from weight_drop import *
@@ -104,6 +106,13 @@ def get_data_module(dataset_name, batch_size, data_augmentation=True):
 
 #################################################################
 
+class MSELoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+        
+    def forward(self, x, y):
+        return F.mse_loss(x, F.one_hot(y, 10).detach().float())
+
 class SimpleModel(LightningModule):
     def __init__(self, args, input_shape):
         super().__init__()
@@ -113,9 +122,11 @@ class SimpleModel(LightningModule):
         # Construct networks
         self.hidden_dim = 2048
         self.net, self.head = self.getNets(input_shape)
+
+        self.evaluated_NTKs = []
         
         if args.loss == 'mse':
-            self.loss = lambda x, y: F.mse_loss(x, F.one_hot(y, 10).detach().float())
+            self.loss = MSELoss()
         elif args.loss == 'cent':
             self.loss = nn.CrossEntropyLoss()
 
@@ -253,7 +264,88 @@ class EnsembleModel(SimpleModel):
         self.log("ensemble_stddev", ensemble_std)
         return self.head.reduce(individuals, dim = 0)
 
+def obtain_NTK_data(main_datamodule):
+
+    main_datamodule.setup()
+    train_set = main_datamodule.train_dataloader().dataset
+    val_set = main_datamodule.val_dataloader().dataset
+
+    rng = np.random.default_rng(42)
+    indices_train = rng.choice(len(train_set), size = 100, replace = False)
+    indices_val = rng.choice(len(val_set), size = 100, replace = False)
+    train_NTK_data = torch.stack([train_set[i][0] for i in indices_train])
+    val_NTK_data = torch.stack([val_set[i][0] for i in indices_val])
+
+    return train_NTK_data, val_NTK_data
+
+# https://pytorch.org/functorch/stable/notebooks/neural_tangent_kernels.html
+def eval_NTK(net, data_A, data_B):
+
+    # prev_device = next(iter(net.parameters())).device
+    # net = net.to(data_A.device)
+    fnet, params = make_functional(net)
+
+    # Obtain device by a parameter from net
+    device = next(iter(net.parameters())).device
+
+    data_A_dev = data_A.to(device)
+    data_B_dev = data_B.to(device)
+
+    def fnet_single(params, x):
+        return fnet(params, x.unsqueeze(0)).squeeze(0)
     
+    def empirical_ntk_jacobian_contraction(fnet_single, params, x1, x2, compute='full'):
+        # Compute J(x1)
+        jac1 = vmap(jacrev(fnet_single), (None, 0))(params, x1)
+        jac1 = [j.flatten(2) for j in jac1]
+        
+        # Compute J(x2)
+        jac2 = vmap(jacrev(fnet_single), (None, 0))(params, x2)
+        jac2 = [j.flatten(2) for j in jac2]
+        
+        # Compute J(x1) @ J(x2).T
+        einsum_expr = None
+        if compute == 'full':
+            einsum_expr = 'Naf,Mbf->NMab'
+        elif compute == 'trace':
+            einsum_expr = 'Naf,Maf->NM'
+        elif compute == 'diagonal':
+            einsum_expr = 'Naf,Maf->NMa'
+        else:
+            assert False
+            
+        result = torch.stack([torch.einsum(einsum_expr, j1, j2) for j1, j2 in zip(jac1, jac2)])
+        result = result.sum(0)
+        return result
+    
+    NTK_batchsize = 16
+    result = torch.zeros((data_A.shape[0], data_B.shape[0]))
+
+    for NTK_i in range(NTK_batchsize):
+        for NTK_j in range(NTK_batchsize):
+
+            si = NTK_i * NTK_batchsize
+            sj = NTK_j * NTK_batchsize
+            ei = si + NTK_batchsize
+            ej = sj + NTK_batchsize
+            
+            result[si:ei, sj:ej] = empirical_ntk_jacobian_contraction(
+                fnet_single,
+                params,
+                data_A_dev[si:ei],
+                data_B_dev[sj:ej],
+                'trace'
+            )
+
+    print("Evaluated empirical NTK with shape: %s" % repr(result.shape))
+
+    # Return net to previous device
+    # net = net.to(prev_device)
+
+    return result
+
+
+
 models_dict =\
 {
     "default": SimpleModel,
@@ -261,16 +353,27 @@ models_dict =\
 }
 
 #################################################################
-        
+
+import types
+
 def main(hparams):
     
     seed = hparams.seed * (hparams.runid + 1)
     pl.seed_everything(seed)
     
     main_datamodule, input_dim = get_data_module(hparams.dataset, hparams.batch_size, data_augmentation = (hparams.dataAug > 0))
+    train_NTK_data, val_NTK_data = obtain_NTK_data(main_datamodule)
+    NTK_data = [train_NTK_data, val_NTK_data]
 
-    # Init our model
-    model = models_dict[hparams.model](hparams, input_dim)
+    def on_validation_epoch_end(self):
+        self.evaluated_NTKs.append(eval_NTK(
+            nn.Sequential(self.net, self.head),
+            NTK_data[0], NTK_data[1]
+        ))
+        # self.evaluated_NTKs.append(torch.normal(0, 1, size = (100, 100)))
+
+    all_model_NTKs = []
+    model_list = [hparams.model, hparams.modelB]
 
     wbgroup = GetArgsStr(hparams)
     if wbgroup is None:
@@ -285,23 +388,40 @@ def main(hparams):
             group = wbgroup
         )
 
-    # Initialize a trainer
-    trainer = Trainer(
-        gpus=1,
-        max_epochs=hparams.epochs,
-        progress_bar_refresh_rate=20,
-        enable_checkpointing=False,
+    for i, chosen_model in enumerate(model_list):
 
-        # limit_val_batches = 0.0,
+        # Hack
+        wandb_logger._prefix = "model%d" % (i+1)
 
-        logger = wandb_logger
-    )
+        # Init our model
+        model = models_dict[chosen_model](hparams, input_dim)
+        model.on_validation_epoch_end = types.MethodType(on_validation_epoch_end, model)
 
-    # Train the model ⚡
-    trainer.fit(
-        model, 
-        datamodule = main_datamodule
-    )
+        # Initialize a trainer
+        trainer = Trainer(
+            gpus=1,
+            max_epochs=hparams.epochs,
+            progress_bar_refresh_rate=20,
+            enable_checkpointing=False,
+
+            # limit_val_batches = 0.0,
+
+            logger = wandb_logger
+        )
+
+        # Train the model ⚡
+        trainer.fit(
+            model, 
+            datamodule = main_datamodule
+        )
+
+        all_model_NTKs.append(model.evaluated_NTKs)
+
+    # Compute the difference between NTKs for all epoch and log them
+    for epoch in range(hparams.epochs):
+        wandb_logger._prefix = ""
+        diff = (all_model_NTKs[0][epoch] - all_model_NTKs[1][epoch]).abs().mean()
+        wandb_logger.log_metrics({"NTK_diff": diff}, step = epoch)
 
 if __name__ == "__main__":
     
@@ -319,6 +439,7 @@ if __name__ == "__main__":
     parser.add_argument("--epochs_per_query", type=int, default=25)
     parser.add_argument("--inference_iteration", type=int, default=20)
     parser.add_argument("--model", type=str, default='default')
+    parser.add_argument("--modelB", type=str, default='default')
     parser.add_argument("--dataset", type=str, default='mnist')
     
     # Model

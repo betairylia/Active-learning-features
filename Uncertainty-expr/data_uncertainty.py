@@ -23,7 +23,17 @@ class AddGaussianNoise(object):
 
 class UncertaintyDataModule(pl.LightningDataModule):
 
-    def __init__(self, batch_size = 128, n_labeled = 16384, num_workers = 16, data_dir = './data', do_partial_train = True, do_contamination = True):
+    def __init__(
+            self,
+            batch_size = 128,
+            n_labeled = 16384,
+            num_workers = 16,
+            data_dir = './data',
+            do_partial_train = True,
+            do_contamination = True,
+            blur_sigma = 2.0,
+            noise_std = 0.2
+        ):
 
         super().__init__()
 
@@ -36,6 +46,9 @@ class UncertaintyDataModule(pl.LightningDataModule):
 
         self.do_partial_train = do_partial_train
         self.do_contamination = do_contamination
+
+        self.blur_sigma = blur_sigma
+        self.noise_std = noise_std
     
     def prepare_data(self):
         pass
@@ -167,10 +180,10 @@ class UncertaintyDataModule(pl.LightningDataModule):
         idx_toTensor = [i for i, t in enumerate(contaminated_transforms) if isinstance(t, transforms.ToTensor)][0]
         
         # Insert Gaussian Blur before ToTensor
-        contaminated_transforms.insert(idx_toTensor, transforms.GaussianBlur(kernel_size = 7, sigma = 2.0))
+        contaminated_transforms.insert(idx_toTensor, transforms.GaussianBlur(kernel_size = 11, sigma = self.blur_sigma))
 
         # Insert Gaussian Noise at the end
-        contaminated_transforms.append(AddGaussianNoise(mean = 0.0, std = 0.2))
+        contaminated_transforms.append(AddGaussianNoise(mean = 0.0, std = self.noise_std))
 
         # Compose the transform
         contaminated_transform = transforms.Compose(contaminated_transforms)
@@ -198,8 +211,18 @@ class UncertaintyDataModule(pl.LightningDataModule):
 
 class MNIST_UncertaintyDM(UncertaintyDataModule):
     
-    def __init__(self, batch_size = 64, n_labeled = 16384, num_workers = 16, data_dir = "../data", do_partial_train = True, do_contamination = True):
-        super().__init__(batch_size, n_labeled, num_workers, data_dir, do_partial_train, do_contamination)
+    def __init__(
+        self,
+        batch_size = 128,
+        n_labeled = 16384,
+        num_workers = 16,
+        data_dir = './data',
+        do_partial_train = True,
+        do_contamination = True,
+        blur_sigma = 2.0,
+        noise_std = 0.2
+    ):
+        super().__init__(batch_size, n_labeled, num_workers, data_dir, do_partial_train, do_contamination, blur_sigma, noise_std)
         self.n_classes = 10
 
     def prepare_data(self):
@@ -225,8 +248,18 @@ class CIFAR10_UncertaintyDM(UncertaintyDataModule):
     
     n_classes: 10
 
-    def __init__(self, batch_size = 64, n_labeled = 16384, num_workers = 16, data_dir = "../data", do_partial_train = True, do_contamination = True):
-        super().__init__(batch_size, n_labeled, num_workers, data_dir, do_partial_train, do_contamination)
+    def __init__(
+        self,
+        batch_size = 128,
+        n_labeled = 16384,
+        num_workers = 16,
+        data_dir = './data',
+        do_partial_train = True,
+        do_contamination = True,
+        blur_sigma = 2.0,
+        noise_std = 0.2
+    ):
+        super().__init__(batch_size, n_labeled, num_workers, data_dir, do_partial_train, do_contamination, blur_sigma, noise_std)
         self.n_classes = 10
 
     def prepare_data(self):
