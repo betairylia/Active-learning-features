@@ -170,7 +170,7 @@ class UncertaintyDataModule(pl.LightningDataModule):
         contaminated_transforms.insert(idx_toTensor, transforms.GaussianBlur(kernel_size = 7, sigma = 2.0))
 
         # Insert Gaussian Noise at the end
-        contaminated_transforms.append(AddGaussianNoise(mean = 0.0, std = 0.2))
+        contaminated_transforms.append(AddGaussianNoise(mean = 0.0, std = 2.0)) # Super high std, but only this working ...
 
         # Compose the transform
         contaminated_transform = transforms.Compose(contaminated_transforms)
