@@ -172,7 +172,9 @@ class ResNet(nn.Module):
         replace_stride_with_dilation: Optional[List[bool]] = None,
         norm_layer: Optional[Callable[..., nn.Module]] = None,
         conv1_type: str = 'imagenet',
-        no_maxpool: bool = False
+        no_maxpool: bool = False,
+        dropout: bool = False,
+        dropout_rate: float = 0.5,
     ) -> None:
         super().__init__()
         if norm_layer is None:
@@ -216,6 +218,9 @@ class ResNet(nn.Module):
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2, dilate=replace_stride_with_dilation[2])
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(512 * block.expansion, num_classes)
+
+        if dropout:
+            self.fc_dropout = nn.Dropout(dropout_rate)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -289,6 +294,10 @@ class ResNet(nn.Module):
 
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
+
+        # Inject dropout
+        x = self.fc_dropout(x)
+
         x = self.fc(x)
 
         return x

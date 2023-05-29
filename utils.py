@@ -57,7 +57,7 @@ def Unioned(arr1, arr2):
     
     return torch.cat([arr1, arr2], dim = 0)
 
-def ImageMosaicSQ(images):
+def ImageMosaicSQ(images, norm = True):
 
     from math import ceil, sqrt
     from PIL import Image
@@ -79,9 +79,14 @@ def ImageMosaicSQ(images):
     else:
         output_im = Image.new('RGB', (total_width, total_height))
 
+    if norm and isinstance(images, torch.Tensor):
+        images = (images - images.min()) / (images.max() - images.min())
+    else:
+        iamges = images + 0.5
+
     # Copy generated images to big image
     for b in range(nImages):
-        img = torch.clamp((images[b].detach().cpu() + 0.5) * 255.0, 0.0, 255.0).permute(1, 2, 0).long().numpy()
+        img = torch.clamp((images[b].detach().cpu()) * 255.0, 0.0, 255.0).permute(1, 2, 0).long().numpy()
         if images[0].shape[0] > 1:
             img = Image.fromarray(img.astype(np.uint8))
         else:

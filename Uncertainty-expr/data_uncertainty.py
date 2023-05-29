@@ -29,10 +29,11 @@ class UncertaintyDataModule(pl.LightningDataModule):
             n_labeled = 16384,
             num_workers = 16,
             data_dir = './data',
-            do_partial_train = True,
+            do_partial_train = False,
             do_contamination = True,
+            use_full_trainset = True,
             blur_sigma = 2.0,
-            noise_std = 0.2
+            noise_std = 0.0
         ):
 
         super().__init__()
@@ -46,6 +47,7 @@ class UncertaintyDataModule(pl.LightningDataModule):
 
         self.do_partial_train = do_partial_train
         self.do_contamination = do_contamination
+        self.use_full_trainset = use_full_trainset
 
         self.blur_sigma = blur_sigma
         self.noise_std = noise_std
@@ -75,7 +77,9 @@ class UncertaintyDataModule(pl.LightningDataModule):
             if self.do_contamination:
                 self.add_contaminate_dataset()
     
-            self.prune_train_set(self.n_labeled)
+            if not self.use_full_trainset:
+                self.prune_train_set(self.n_labeled)
+            
             self.balance_test_set()
 
     def prune_train_set(self, n_labeled):
@@ -204,25 +208,18 @@ class UncertaintyDataModule(pl.LightningDataModule):
         return torch.utils.data.DataLoader(self.train_dataset, batch_size = self.batch_size, shuffle = True, num_workers = self.num_workers)
 
     def val_dataloader(self):
-        return torch.utils.data.DataLoader(self.test_dataset, batch_size = self.batch_size, shuffle = False, num_workers = self.num_workers)
+        return torch.utils.data.DataLoader(self.test_dataset, batch_size = self.batch_size, shuffle = True, num_workers = self.num_workers)
 
     def test_dataloader(self):
-        return torch.utils.data.DataLoader(self.test_dataset, batch_size = self.batch_size, shuffle = False, num_workers = self.num_workers)
+        return torch.utils.data.DataLoader(self.test_dataset, batch_size = self.batch_size, shuffle = True, num_workers = self.num_workers)
 
 class MNIST_UncertaintyDM(UncertaintyDataModule):
     
     def __init__(
         self,
-        batch_size = 128,
-        n_labeled = 16384,
-        num_workers = 16,
-        data_dir = './data',
-        do_partial_train = True,
-        do_contamination = True,
-        blur_sigma = 2.0,
-        noise_std = 0.2
+        **kwargs
     ):
-        super().__init__(batch_size, n_labeled, num_workers, data_dir, do_partial_train, do_contamination, blur_sigma, noise_std)
+        super().__init__(**kwargs)
         self.n_classes = 10
 
     def prepare_data(self):
@@ -250,16 +247,9 @@ class CIFAR10_UncertaintyDM(UncertaintyDataModule):
 
     def __init__(
         self,
-        batch_size = 128,
-        n_labeled = 16384,
-        num_workers = 16,
-        data_dir = './data',
-        do_partial_train = True,
-        do_contamination = True,
-        blur_sigma = 2.0,
-        noise_std = 0.2
+        **kwargs
     ):
-        super().__init__(batch_size, n_labeled, num_workers, data_dir, do_partial_train, do_contamination, blur_sigma, noise_std)
+        super().__init__(**kwargs)
         self.n_classes = 10
 
     def prepare_data(self):
@@ -277,3 +267,33 @@ class CIFAR10_UncertaintyDM(UncertaintyDataModule):
     
     def get_test_dataset(self, transform):
         return datasets.CIFAR10(root = self.data_dir, train = False, download = True, transform = transform)
+
+class SVHN_UncertaintyDM(UncertaintyDataModule):
+    
+    n_classes: 10
+
+    def __init__(
+        self,
+        **kwargs
+    ):
+        super().__init__(**kwargs)
+        self.n_classes = 10
+
+    def prepare_data(self):
+        datasets.SVHN(root = self.data_dir, split = 'train', download = True)
+        datasets.SVHN(root = self.data_dir, split = 'test', download = True)
+
+    def get_standard_transforms(self):
+        return transforms.Compose([
+            transforms.ToTensor(),
+            
+            # https://deepobs.readthedocs.io/en/v1.2.0-beta0_a/_modules/deepobs/pytorch/datasets/svhn.html
+            # Not sure where those numbers come from but should be fine
+            transforms.Normalize((0.4376821, 0.4437697, 0.47280442), (0.19803012, 0.20101562, 0.19703614))
+        ])
+    
+    def get_train_dataset(self, transform):
+        return datasets.SVHN(root = self.data_dir, split = 'train', download = True, transform = transform)
+    
+    def get_test_dataset(self, transform):
+        return datasets.SVHN(root = self.data_dir, split = 'test', download = True, transform = transform)

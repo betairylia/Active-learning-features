@@ -23,7 +23,7 @@ from utils import *
 
 from pytorch_lightning.loggers import WandbLogger
 
-from data_uncertainty import MNIST_UncertaintyDM, CIFAR10_UncertaintyDM #, FashionMNIST_UncertaintyDM, SVHN_UncertaintyDM
+from data_uncertainty import MNIST_UncertaintyDM, CIFAR10_UncertaintyDM, SVHN_UncertaintyDM #, FashionMNIST_UncertaintyDM
 from recorder import Recorder
 
 from nets import net_dict
@@ -53,13 +53,33 @@ input_size_dict = {
     'cub200': [3, 224, 224],
 }
 
-def get_data_module(dataset_name, batch_size, data_augmentation=True, num_workers=16, data_dir='./data', do_partial_train = True, do_contamination = True):
+def get_data_module(
+    dataset_name,
+    batch_size,
+    data_augmentation=True,
+    num_workers=16,
+    data_dir='./data',
+    do_partial_train = False,
+    do_contamination = True,
+    use_full_trainset = True):
     
+    args = {
+        "data_dir": data_dir,
+        "batch_size": batch_size,
+        "num_workers": num_workers,
+        "do_partial_train": do_partial_train,
+        "do_contamination": do_contamination,
+        "use_full_trainset": use_full_trainset
+    }
+
     if dataset_name == 'mnist':
-        main_dm = MNIST_UncertaintyDM(data_dir = data_dir, batch_size = batch_size, num_workers = num_workers, do_partial_train = do_partial_train, do_contamination = do_contamination)
+        main_dm = MNIST_UncertaintyDM(**args)
     
     elif dataset_name == 'cifar10':
-        main_dm = CIFAR10_UncertaintyDM(data_dir = data_dir, batch_size = batch_size, num_workers = num_workers, do_partial_train = do_partial_train, do_contamination = do_contamination)
+        main_dm = CIFAR10_UncertaintyDM(**args)
+    
+    elif dataset_name == 'svhn':
+        main_dm = SVHN_UncertaintyDM(**args)
     
     return main_dm, input_size_dict[dataset_name]
 
@@ -88,6 +108,7 @@ class SimpleModel(LightningModule):
         # Construct networks
         self.hidden_dim = 2048
         self.output_dim = output_dim
+        self.visualized = False
 
         self.net_factory = net_dict[args.net]()
         self.net, self.head = self.net_factory.getNets(
@@ -109,6 +130,7 @@ class SimpleModel(LightningModule):
         # self.l1 = resnet
         
         self.accuracy = lambda p, y: (p == y).float().mean()
+        self.accuracy_seen = lambda p, y, o: ((torch.logical_and(p == y, o == 0)).float().sum() / (o == 0).float().sum()) if ((o == 0).float().sum() > 0) else None
 
         # TODO: Check which one fits the task better
         # self.uncertainty_auroc = AUROC(task="binary")
@@ -154,13 +176,21 @@ class SimpleModel(LightningModule):
         loss = self.loss(logits, y)
         preds = torch.argmax(logits, dim=1)
         acc = self.accuracy(preds, y)
+        acc_seen = self.accuracy_seen(preds, y, o)
+
+        if not self.visualized:
+            self.visualized = True
+            self.logger.log_image(key = "test-set", images = [ImageMosaicSQ(x)], caption = ["".join(["1" if _o == 1 else "0" for _o in o.detach().cpu()])])
 
         self.val_uncertainty_scores.append(uncertainty)
         self.val_uncertainty_labels.append(o)
 
         # Calling self.log will surface up scalars for you in TensorBoard
         self.log("val_loss", loss, prog_bar=False)
-        self.log("val_acc", acc, prog_bar=True)
+        self.log("val_acc", acc, prog_bar=False)
+        if acc_seen is not None:
+            self.log("val_acc_seen", acc_seen, prog_bar=True)
+        
         return loss
 
     def on_validation_epoch_end(self):
@@ -314,8 +344,11 @@ class NaiveDropoutModel(SimpleModel):
             # entropy_conditional = -torch.sum(probs * torch.log(probs + 1e-8), dim = 2).mean(dim = 0)
             # bald_objective = entropy_marginal - entropy_conditional
 
-            uncertainty = torch.std(logits, dim = 0).mean(dim = 1)
+            # uncertainty = torch.std(logits, dim = 0).mean(dim = 1)
             # uncertainty = probs.std(0).mean(1)
+            model_prediction = probs.mean(0)
+            entropy = -torch.sum(model_prediction * torch.log(model_prediction + 1e-8), dim = 1)
+            uncertainty = entropy
 
             return logits.mean(dim = 0), uncertainty
 
@@ -349,8 +382,11 @@ class MCDropoutModel(SimpleModel):
             # entropy_conditional = -torch.sum(probs * torch.log(probs + 1e-8), dim = 2).mean(dim = 0)
             # bald_objective = entropy_marginal - entropy_conditional
 
-            uncertainty = torch.std(logits, dim = 0).mean(dim = 1)
+            # uncertainty = torch.std(logits, dim = 0).mean(dim = 1)
             # uncertainty = probs.std(0).mean(1)
+            model_prediction = probs.mean(0)
+            entropy = -torch.sum(model_prediction * torch.log(model_prediction + 1e-8), dim = 1)
+            uncertainty = entropy
 
             return logits.mean(dim = 0), uncertainty
 
@@ -399,7 +435,10 @@ class TestTimeOnly_ApproximateDropoutModel(SimpleModel):
             # entropy_marginal = -torch.sum(probs_marginal * torch.log(probs_marginal + 1e-8), dim = 1)
             # entropy_conditional = -torch.sum(probs * torch.log(probs + 1e-8), dim = 2).mean(dim = 0)
             # bald_objective = entropy_marginal - entropy_conditional
-            uncertainty = torch.std(logits, dim = 0).mean(dim = 1)
+            # uncertainty = torch.std(logits, dim = 0).mean(dim = 1)
+            model_prediction = probs.mean(0)
+            entropy = -torch.sum(model_prediction * torch.log(model_prediction + 1e-8), dim = 1)
+            uncertainty = entropy
 
             self.recorder_identity(self.net)
             self.recorder_identity(self.head)
@@ -477,7 +516,8 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=str, default='default')
     parser.add_argument("--net", type=str, default='mlp')
     parser.add_argument("--dataset", type=str, default='mnist')
-    parser.add_argument("--do_partial_train", type=int, default=1)
+    parser.add_argument("--do_partial_train", type=int, default=0)
+    parser.add_argument("--use_full_trainset", type=int, default=1)
     parser.add_argument("--do_contamination", type=int, default=1)
     parser.add_argument("--num_workers", type=int, default=16)
     

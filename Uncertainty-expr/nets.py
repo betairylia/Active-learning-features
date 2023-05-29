@@ -4,6 +4,8 @@ import torch.nn.functional as F
 
 from recorder import Recorder
 
+import resnet
+
 import math
 
 class NetFactoryBase():
@@ -119,8 +121,79 @@ class CNNFactory(NetFactoryBase):
         else:
             return [conv, bn, nn.Dropout2d(p = p)]
 
+class ResNetCIFARFactory(NetFactoryBase):
+
+    def __init__(self, factory_args = None):
+        super(ResNetCIFARFactory, self).__init__(factory_args)
+        self.args = factory_args
+
+    def getNets(self, input_shape, output_shape, hidden_dim = 1024, dropout_rate = 0.5):
+        whole_net = resnet.resnet18(
+            pretrained = False,
+            conv1_type = 'cifar',
+            no_maxpool = True,
+            dropout = True,
+            dropout_rate = dropout_rate,
+            num_classes = output_shape[0],
+        )
+
+        head = whole_net.fc
+        whole_net.fc = nn.Identity()
+        net = whole_net
+
+        # print(net)
+        # print(head)
+
+        return net, head
+
+class LeNetFactory(NetFactoryBase):
+
+    def __init__(self, factory_args = None):
+        super(LeNetFactory, self).__init__(factory_args)
+        self.args = factory_args
+
+    def getNets(self, input_shape, output_shape, hidden_dim = 1024, dropout_rate = 0.5):
+
+        in_features = input_shape[0]
+
+        conv_block = nn.Sequential( 
+            nn.Conv2d(in_channels=in_features,
+                out_channels=6,
+                kernel_size=5,
+                stride=1),
+            nn.Tanh(),
+            nn.MaxPool2d(2,2),
+            
+            nn.Conv2d(in_channels=6,
+                out_channels=16,
+                kernel_size=5,
+                stride=1),
+            nn.Tanh(),
+            nn.MaxPool2d(2,2)
+        )
+        
+        linear_block = nn.Sequential( 
+            nn.Linear(16*5*5, 120),
+            nn.Tanh(),
+            nn.Linear(120,84),
+            nn.Tanh(),
+            nn.Dropout(p = dropout_rate),
+        #    nn.Linear(84,10)
+        )
+
+        net = nn.Sequential(
+            conv_block,
+            nn.Flatten(),
+            linear_block
+        )
+        head = nn.Linear(84,10)
+
+        return net, head
+
 net_dict =\
 {
     'mlp': MLPFactory,
     'simple-cnn': CNNFactory,
+    'resnet-cifar': ResNetCIFARFactory,
+    'lenet-5': LeNetFactory,
 }
