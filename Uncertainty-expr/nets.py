@@ -128,6 +128,9 @@ class ResNetCIFARFactory(NetFactoryBase):
         self.args = factory_args
 
     def getNets(self, input_shape, output_shape, hidden_dim = 1024, dropout_rate = 0.5):
+
+        in_features = input_shape[0]
+
         whole_net = resnet.resnet18(
             pretrained = False,
             conv1_type = 'cifar',
@@ -135,6 +138,7 @@ class ResNetCIFARFactory(NetFactoryBase):
             dropout = True,
             dropout_rate = dropout_rate,
             num_classes = output_shape[0],
+            input_channels = in_features,
         )
 
         head = whole_net.fc

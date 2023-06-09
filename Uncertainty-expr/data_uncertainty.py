@@ -33,7 +33,7 @@ class UncertaintyDataModule(pl.LightningDataModule):
             do_contamination = True,
             use_full_trainset = True,
             blur_sigma = 2.0,
-            noise_std = 0.0
+            noise_std = 0.3
         ):
 
         super().__init__()

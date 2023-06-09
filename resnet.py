@@ -175,6 +175,7 @@ class ResNet(nn.Module):
         no_maxpool: bool = False,
         dropout: bool = False,
         dropout_rate: float = 0.5,
+        input_channels: int = 3,
     ) -> None:
         super().__init__()
         if norm_layer is None:
@@ -197,9 +198,9 @@ class ResNet(nn.Module):
 
         print("conv1_type:{}".format(conv1_type))
         if conv1_type == 'imagenet':
-            self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
+            self.conv1 = nn.Conv2d(input_channels, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
         elif conv1_type == 'cifar':
-            self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=3, stride=1, padding=1, bias=False)
+            self.conv1 = nn.Conv2d(input_channels, self.inplanes, kernel_size=3, stride=1, padding=1, bias=False)
         else:
             raise NotImplementedError
 
