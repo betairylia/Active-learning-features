@@ -310,14 +310,57 @@ class EnsembleNets(nn.Module):
         else:
             return torch.stack(outputs, dim = 0)
 
-class NaiveEnsembleModel(SimpleModel):
+class NaiveEnsembleSummationModel_HeadOnly(SimpleModel):
 
     def __init__(self, args, input_shape, output_dim=10, ensemble_size = 4):
 
         super().__init__(args, input_shape, output_dim)
 
         self.ensemble_size = ensemble_size
-        self.ensemble_reduce = 'mean'
+        self.ensemble_reduce = 'sum'
+        self.net, self.head = self.getNets_ensemble(input_shape, output_dim)
+        print(self)
+
+        # Store the initialized network
+        self.net_init = copy.deepcopy(self.net)
+        self.head_init = copy.deepcopy(self.head)
+
+    def getNets_ensemble(self, input_shape, output_dim):
+        heads = [
+            self.net_factory.getNets(
+                input_shape,
+                [output_dim],
+                hidden_dim = self.args.hidden_dim,
+                dropout_rate = self.args.dropout_rate
+            )[1] for _ in range(self.ensemble_size)
+        ]
+        head = EnsembleNets(heads, sums = True, split_input = False, reduce_method = self.ensemble_reduce)
+        return self.net, head
+
+    def forward(self, x):
+
+        self.disable_dropout(self.net)
+        self.disable_dropout(self.head)
+
+        z = self.net(x)
+        individuals = self.head(z, override_return_individuals = True)
+        individual_probs = F.softmax(individuals, dim = 2)
+
+        # ensemble_std = torch.std(individual_probs, dim = 0).mean(1)
+        model_prediction = individual_probs.mean(0)
+        entropy = -torch.sum(model_prediction * torch.log(model_prediction + 1e-8), dim = 1)
+        uncertainty = entropy
+
+        return self.head.reduce(individuals, dim = 0), uncertainty # ensemble_std
+
+class NaiveEnsembleSummationModel(SimpleModel):
+
+    def __init__(self, args, input_shape, output_dim=10, ensemble_size = 4):
+
+        super().__init__(args, input_shape, output_dim)
+
+        self.ensemble_size = ensemble_size
+        self.ensemble_reduce = 'sum'
         self.net, self.head = self.getNets_ensemble(input_shape, output_dim)
         print(self)
 
@@ -352,6 +395,71 @@ class NaiveEnsembleModel(SimpleModel):
         uncertainty = entropy
 
         return self.head.reduce(individuals, dim = 0), uncertainty # ensemble_std
+
+class NaiveEnsembleModel(NaiveEnsembleSummationModel):
+
+    def training_step(self, batch, batch_nb):
+
+        x, y, o = batch
+
+        logits = self.scale_output(self(x)[0], x)
+
+        # loss = F.cross_entropy(self(x), y)
+        loss = 0
+        for i in range(logits.shape[0]):
+            loss += self.loss(logits[i, :, :], y)
+        
+        # loss /= logits.shape[0]
+
+        self.log("train_loss", loss)
+
+        return loss
+
+class NaiveEnsembleModel_KernelNoiseOnly(NaiveEnsembleModel):
+
+    def forward(self, x):
+
+        self.disable_dropout(self.net)
+        self.disable_dropout(self.head)
+
+        individuals = self.head(self.net(x), override_return_individuals = True)
+        individuals_init = self.head_init(self.net_init(x), override_return_individuals = True)
+        individuals = individuals - individuals_init
+
+        individual_probs = F.softmax(individuals, dim = 2)
+
+        # ensemble_std = torch.std(individual_probs, dim = 0).mean(1)
+        model_prediction = individual_probs.mean(0)
+        entropy = -torch.sum(model_prediction * torch.log(model_prediction + 1e-8), dim = 1)
+        uncertainty = entropy
+
+        if self.training:
+            return individuals, uncertainty # ensemble_std
+        else:
+            return self.head.reduce(individuals, dim = 0), uncertainty # ensemble_std
+        
+class NaiveEnsembleSummationModel_KernelNoiseOnly(NaiveEnsembleSummationModel):
+
+    def forward(self, x):
+
+        self.disable_dropout(self.net)
+        self.disable_dropout(self.head)
+
+        individuals = self.head(self.net(x), override_return_individuals = True)
+        individuals_init = self.head_init(self.net_init(x), override_return_individuals = True)
+        individuals = individuals - individuals_init
+
+        individual_probs = F.softmax(individuals, dim = 2)
+
+        # ensemble_std = torch.std(individual_probs, dim = 0).mean(1)
+        model_prediction = individual_probs.mean(0)
+        entropy = -torch.sum(model_prediction * torch.log(model_prediction + 1e-8), dim = 1)
+        uncertainty = entropy
+
+        if self.training:
+            return individuals, uncertainty # ensemble_std
+        else:
+            return self.head.reduce(individuals, dim = 0), uncertainty # ensemble_std
 
 class NaiveDropoutModel(SimpleModel):
     
@@ -632,6 +740,113 @@ class TestTimeOnly_GroundTruthInit_WassersteinModel(SimpleModel):
 
             return logits.mean(dim = 0), uncertainty.to(logits.device)
 
+class TestTimeOnly_GroundTruthInit_VelocityModel(SimpleModel):
+
+    def __init__(self, args, input_shape, output_dim = 10):
+        
+        super().__init__(args, input_shape, output_dim)
+
+    def forward(self, x):
+
+        if self.training:
+
+            self.disable_dropout(self.net)
+            self.disable_dropout(self.head)
+            # self.enable_dropout(self.net)
+            # self.enable_dropout(self.head)
+            logits = self.head(self.net(x))
+            return logits, None
+
+        else:
+
+            ##################################################
+            # INITIAL MODEL
+            ##################################################
+
+            # Record
+            
+            self.disable_dropout(self.net_init)
+            self.disable_dropout(self.head_init)
+
+            self.record(self.net_init)
+            self.record(self.head_init)
+
+            _logits_init = self.head_init(self.net_init(x))
+
+            # Replay
+
+            self.enable_dropout(self.net_init)
+            self.enable_dropout(self.head_init)
+
+            self.replay(self.net_init)
+            self.replay(self.head_init)
+
+            logits_init = []
+            probs_init = []
+            for i in range(self.args.dropout_iters):
+                logits_init.append(self.head_init(self.net_init(x)))
+                pred_prob_init = F.softmax(logits_init[-1], dim = 1)
+                probs_init.append(pred_prob_init)
+
+            logits_init = torch.stack(logits_init, dim = 0)
+            probs_init = torch.stack(probs_init, dim = 0)
+
+            ##################################################
+            # TRAINED MODEL
+            ##################################################
+
+            # Record
+            self.disable_dropout(self.net)
+            self.disable_dropout(self.head)
+
+            self.record(self.net)
+            self.record(self.head)
+
+            _logits = self.head(self.net(x))
+
+            # Replay
+
+            self.enable_dropout(self.net)
+            self.enable_dropout(self.head)
+
+            self.replay(self.net)
+            self.replay(self.head)
+
+            logits = []
+            probs = []
+            for i in range(self.args.dropout_iters):
+                logits.append(self.head(self.net(x)))
+                pred_prob = F.softmax(logits[-1], dim = 1)
+                probs.append(pred_prob)
+
+            logits = torch.stack(logits, dim = 0)
+            probs = torch.stack(probs, dim = 0)
+            
+            # Compute OT for each dimension
+            # N_POINTS, BATCH_SIZE, DIM = logits.shape
+            # margin_a = np.ones((N_POINTS,)) / N_POINTS
+            # margin_b = np.ones((N_POINTS,)) / N_POINTS
+
+            # distance = torch.zeros(BATCH_SIZE)
+
+            # for b in range(BATCH_SIZE):
+            #     for d in range(DIM):
+            #         M = (logits_init[:, b, d].unsqueeze(1) - logits[:, b, d].unsqueeze(0)).abs().detach().cpu().numpy()
+            #         distance[b] += ot.emd2(margin_a, margin_b, M)
+
+            move_dirc = torch.sort(logits, dim = -1)[0] - torch.sort(logits_init, dim = -1)[0]
+            moved_distance = torch.sqrt(1e-8 + (logits.mean(0, keepdims = True) - logits_init.mean(0, keepdims = True)) ** 2)
+            normed_velocity = move_dirc / moved_distance
+            uncertainty = normed_velocity.std(0).mean(-1)
+
+            model_prediction = probs.mean(0)
+            # entropy = -torch.sum(model_prediction * torch.log(model_prediction + 1e-8), dim = 1)
+
+            self.recorder_identity(self.net)
+            self.recorder_identity(self.head)
+
+            return logits.mean(dim = 0), uncertainty.to(logits.device)
+
 class TestTimeOnly_GaussianInit_WassersteinModel(SimpleModel):
 
     def __init__(self, args, input_shape, output_dim = 10):
@@ -715,11 +930,17 @@ models_dict =\
     "mcdropout": MCDropoutModel,
     "tt_approx": TestTimeOnly_ApproximateDropoutModel,
     "naive-ensemble": NaiveEnsembleModel,
+    "naive-ensemble-sum": NaiveEnsembleSummationModel,
+    "naive-ensemble-sum-head": NaiveEnsembleSummationModel_HeadOnly,
+    "kernel-ensemble": NaiveEnsembleModel_KernelNoiseOnly,
+    "kernel-ensemble-sum": NaiveEnsembleSummationModel_KernelNoiseOnly,
     "naive-dropout": NaiveDropoutModel,
     "train-diff": TestTimeOnly_GroundTruthInit_PlainTrainingDifference,
 
     "wasserstein-GTinit": TestTimeOnly_GroundTruthInit_WassersteinModel,
     "wasserstein-GaussianInit": TestTimeOnly_GaussianInit_WassersteinModel,
+
+    "velocity-std": TestTimeOnly_GroundTruthInit_VelocityModel,
 }
 
 #################################################################
