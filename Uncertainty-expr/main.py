@@ -398,6 +398,24 @@ class NaiveEnsembleSummationModel(SimpleModel):
 
 class NaiveEnsembleModel(NaiveEnsembleSummationModel):
 
+    def forward(self, x):
+
+        self.disable_dropout(self.net)
+        self.disable_dropout(self.head)
+
+        individuals = self.head(self.net(x), override_return_individuals = True)
+        individual_probs = F.softmax(individuals, dim = 2)
+
+        # ensemble_std = torch.std(individual_probs, dim = 0).mean(1)
+        model_prediction = individual_probs.mean(0)
+        entropy = -torch.sum(model_prediction * torch.log(model_prediction + 1e-8), dim = 1)
+        uncertainty = entropy
+
+        if self.training:
+            return individuals, uncertainty # ensemble_std
+        else:
+            return self.head.reduce(individuals, dim = 0), uncertainty # ensemble_std
+
     def training_step(self, batch, batch_nb):
 
         x, y, o = batch

@@ -3,9 +3,10 @@ from torch import nn
 
 class Recorder(nn.Module):
     
-    def __init__(self, wrappedLayer):
+    def __init__(self, wrappedLayer, dropout_p = 0.5):
         super().__init__()
         self.wrappedLayer = wrappedLayer
+        self.dropout = nn.Dropout(dropout_p)
         
         self.isRecord = False
         self.isReplay = False
@@ -31,6 +32,6 @@ class Recorder(nn.Module):
             return z
 
         if self.isReplay:
-            return self.buffer * x
+            return self.dropout(self.buffer * x)
         
         return self.wrappedLayer(x)

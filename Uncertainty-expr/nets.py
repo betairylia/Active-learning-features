@@ -44,7 +44,7 @@ class MLPFactory(NetFactoryBase):
         def getblock(d_in, d_out, act = torch.nn.ReLU):
             return [
                 torch.nn.Linear(d_in, d_out),
-                Recorder(act()) if act is not None else torch.nn.Identity(),
+                Recorder(act(), 0) if act is not None else torch.nn.Identity(),
                 torch.nn.Dropout(p = dropout_rate),
             ]
             # return [
@@ -117,7 +117,7 @@ class CNNFactory(NetFactoryBase):
             bn = norm(out_ch)
         
         if act:
-            return [conv, bn, Recorder(nn.ReLU(inplace = True)), nn.Dropout2d(p = p)]
+            return [conv, bn, Recorder(nn.ReLU(inplace = True), 0), nn.Dropout2d(p = p)]
         else:
             return [conv, bn, nn.Dropout2d(p = p)]
 
@@ -135,10 +135,11 @@ class ResNetCIFARFactory(NetFactoryBase):
             pretrained = False,
             conv1_type = 'cifar',
             no_maxpool = True,
-            dropout = True,
-            dropout_rate = dropout_rate,
+            # dropout = True,
+            # dropout_rate = dropout_rate,
             num_classes = output_shape[0],
             input_channels = in_features,
+            act = lambda: Recorder(nn.ReLU(inplace = False), dropout_rate)
         )
 
         head = whole_net.fc

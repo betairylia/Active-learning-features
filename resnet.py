@@ -6,7 +6,6 @@ from torch import Tensor
 
 from torch.utils.model_zoo import load_url as load_state_dict_from_url
 
-
 __all__ = [
     "ResNet",
     "resnet18",
@@ -66,6 +65,7 @@ class BasicBlock(nn.Module):
         base_width: int = 64,
         dilation: int = 1,
         norm_layer: Optional[Callable[..., nn.Module]] = None,
+        act = lambda: nn.ReLU(inplace=True),
     ) -> None:
         super().__init__()
         if norm_layer is None:
@@ -77,7 +77,7 @@ class BasicBlock(nn.Module):
         # Both self.conv1 and self.downsample layers downsample the input when stride != 1
         self.conv1 = conv3x3(inplanes, planes, stride)
         self.bn1 = norm_layer(planes)
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = act()
         self.conv2 = conv3x3(planes, planes)
         self.bn2 = norm_layer(planes)
         self.downsample = downsample
@@ -121,6 +121,7 @@ class Bottleneck(nn.Module):
         base_width: int = 64,
         dilation: int = 1,
         norm_layer: Optional[Callable[..., nn.Module]] = None,
+        act = lambda: nn.ReLU(inplace=True),
     ) -> None:
         super().__init__()
         if norm_layer is None:
@@ -133,7 +134,7 @@ class Bottleneck(nn.Module):
         self.bn2 = norm_layer(width)
         self.conv3 = conv1x1(width, planes * self.expansion)
         self.bn3 = norm_layer(planes * self.expansion)
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = act()
         self.downsample = downsample
         self.stride = stride
 
@@ -173,8 +174,9 @@ class ResNet(nn.Module):
         norm_layer: Optional[Callable[..., nn.Module]] = None,
         conv1_type: str = 'imagenet',
         no_maxpool: bool = False,
-        dropout: bool = False,
-        dropout_rate: float = 0.5,
+        # dropout: bool = False,
+        # dropout_rate: float = 0.5,
+        act = lambda: nn.ReLU(inplace=True),
         input_channels: int = 3,
     ) -> None:
         super().__init__()
@@ -205,7 +207,8 @@ class ResNet(nn.Module):
             raise NotImplementedError
 
         self.bn1 = norm_layer(self.inplanes)
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = act()
+        self.act = act
 
         print("no_maxpool:{}".format(no_maxpool))
         if no_maxpool:
@@ -220,8 +223,8 @@ class ResNet(nn.Module):
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(512 * block.expansion, num_classes)
 
-        if dropout:
-            self.fc_dropout = nn.Dropout(dropout_rate)
+        # if dropout:
+            # self.fc_dropout = nn.Dropout(dropout_rate)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -263,7 +266,7 @@ class ResNet(nn.Module):
         layers = []
         layers.append(
             block(
-                self.inplanes, planes, stride, downsample, self.groups, self.base_width, previous_dilation, norm_layer
+                self.inplanes, planes, stride, downsample, self.groups, self.base_width, previous_dilation, norm_layer, self.act
             )
         )
         self.inplanes = planes * block.expansion
@@ -276,6 +279,7 @@ class ResNet(nn.Module):
                     base_width=self.base_width,
                     dilation=self.dilation,
                     norm_layer=norm_layer,
+                    act=self.act
                 )
             )
 
@@ -297,7 +301,7 @@ class ResNet(nn.Module):
         x = torch.flatten(x, 1)
 
         # Inject dropout
-        x = self.fc_dropout(x)
+        # x = self.fc_dropout(x)
 
         x = self.fc(x)
 
