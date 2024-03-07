@@ -21,6 +21,74 @@ class AddGaussianNoise(object):
     def __repr__(self):
         return self.__class__.__name__ + '(mean={0}, std={1})'.format(self.mean, self.std)
 
+class BinaryDataset(torch.utils.data.Dataset):
+    def __init__(self, dataset, n_classes):
+        self.dataset = dataset
+        self.n_classes = n_classes
+        self.half_split = n_classes // 2
+
+    def convert_to_binary(self, y):
+        return 0 if y < self.half_split else 1
+
+    def __getitem__(self, index):
+
+        item = self.dataset[index]
+
+        # x, y
+        if len(item) == 2:
+            return (item[0], self.convert_to_binary(item[1]))
+
+        # x, y, o
+        elif len(item) == 3:
+            return (item[0], self.convert_to_binary(item[1]), item[2])
+
+        # i, x, y, o
+        elif len(item) == 4:
+            return (item[0], item[1], self.convert_to_binary(item[2]), item[3])
+
+    def __len__(self):
+        return len(self.dataset)
+
+class IndicedDataset(torch.utils.data.Dataset):
+    def __init__(self, dataset):
+        self.dataset = dataset
+
+    def __getitem__(self, index):
+        x = self.dataset[index]
+        return (index, *x)
+
+    def __len__(self):
+        return len(self.dataset)
+
+class UncertaintyDataset(torch.utils.data.Dataset):
+    def __init__(self, dataset, is_contamination = 0):
+        self.dataset = dataset
+        self.is_contamination = is_contamination
+
+    def __getitem__(self, index):
+        d, l = self.dataset[index]
+        return d, l, self.is_contamination
+
+    def __len__(self):
+        return len(self.dataset)
+
+class CombinedDataset(torch.utils.data.Dataset):
+    def __init__(self, dataset_1, dataset_2):
+        self.dataset_1 = dataset_1
+        self.d1_len = len(self.dataset_1)
+        self.dataset_2 = dataset_2
+        self.d2_len = len(self.dataset_2)
+    
+    def __getitem__(self, index):
+        if index < self.d1_len:
+            d, l, is_o = self.dataset_1[index]
+        else:
+            d, l, is_o = self.dataset_2[index - self.d1_len]
+        return d, l, is_o
+    
+    def __len__(self):
+        return self.d1_len + self.d2_len
+
 class UncertaintyDataModule(pl.LightningDataModule):
 
     def __init__(
@@ -33,7 +101,9 @@ class UncertaintyDataModule(pl.LightningDataModule):
             do_contamination = True,
             use_full_trainset = True,
             blur_sigma = 2.0,
-            noise_std = 0.3
+            noise_std = 0.3,
+            test_set_max = -1,
+            is_binary = 0
         ):
 
         super().__init__()
@@ -48,9 +118,12 @@ class UncertaintyDataModule(pl.LightningDataModule):
         self.do_partial_train = do_partial_train
         self.do_contamination = do_contamination
         self.use_full_trainset = use_full_trainset
+        self.test_set_max = test_set_max
 
         self.blur_sigma = blur_sigma
         self.noise_std = noise_std
+
+        self.is_binary = is_binary
     
     def prepare_data(self):
         pass
@@ -68,19 +141,38 @@ class UncertaintyDataModule(pl.LightningDataModule):
         if self.inited == False:
             self.inited = True
             standard_transform = self.get_standard_transforms()
+
+            print("Loading raw datasets...")
             self.train_dataset = self.get_train_dataset(transform = standard_transform)
             self.test_dataset = self.get_test_dataset(transform = standard_transform)
     
             if self.do_partial_train:
+                print("Removing classes from training set...")
                 self.remove_classes_from_train_set()
     
             if self.do_contamination:
+                print("Adding contamination...")
                 self.add_contaminate_dataset()
     
             if not self.use_full_trainset:
+                print("Pruning training set...")
                 self.prune_train_set(self.n_labeled)
             
-            self.balance_test_set()
+            # print("Balancing test set...")
+            # self.balance_test_set()
+
+            if(self.test_set_max > 0):
+                print("Capping test set...")
+                self.cap_test_set(self.test_set_max)
+
+            print("Wrapping datasets...")
+            self.train_dataset = IndicedDataset(self.train_dataset)
+            self.test_dataset = IndicedDataset(self.test_dataset)
+
+            if self.is_binary:
+                print("Converting to binary classification...")
+                self.train_dataset = BinaryDataset(self.train_dataset, self.n_classes or 10)
+                self.test_dataset = BinaryDataset(self.test_dataset, self.n_classes or 10)
 
     def prune_train_set(self, n_labeled):
         self.train_dataset_full = self.train_dataset
@@ -96,6 +188,10 @@ class UncertaintyDataModule(pl.LightningDataModule):
 
         picked_inliers = np.random.choice(inlier_indices_test, size = (self.n_raw_outliers,))
         self.test_dataset = torch.utils.data.Subset(self.test_dataset, [*picked_inliers, *outlier_indices_test])
+    
+    def cap_test_set(self, capacity):
+        if capacity > 0:
+            self.test_dataset = torch.utils.data.Subset(self.test_dataset, np.random.choice(len(self.test_dataset), size = (capacity,)))
 
     def remove_classes_from_train_set(self):
         
@@ -145,35 +241,6 @@ class UncertaintyDataModule(pl.LightningDataModule):
         n_contaminate = len(self.test_dataset)
         dset_self = self
 
-        class UncertaintyDataset(torch.utils.data.Dataset):
-            def __init__(self, dataset, is_contamination = 0):
-                self.dataset = dataset
-                self.is_contamination = is_contamination
-
-            def __getitem__(self, index):
-                d, l = self.dataset[index]
-                return d, l, self.is_contamination
-
-            def __len__(self):
-                return len(self.dataset)
-    
-        class CombinedDataset(torch.utils.data.Dataset):
-            def __init__(self, dataset_1, dataset_2):
-                self.dataset_1 = dataset_1
-                self.d1_len = len(self.dataset_1)
-                self.dataset_2 = dataset_2
-                self.d2_len = len(self.dataset_2)
-            
-            def __getitem__(self, index):
-                if index < self.d1_len:
-                    d, l, is_o = self.dataset_1[index]
-                else:
-                    d, l, is_o = self.dataset_2[index - self.d1_len]
-                return d, l, is_o
-            
-            def __len__(self):
-                return self.d1_len + self.d2_len
-
         self.train_dataset = UncertaintyDataset(self.train_dataset, is_contamination = 0)
 
         ###################################
@@ -184,7 +251,7 @@ class UncertaintyDataModule(pl.LightningDataModule):
         idx_toTensor = [i for i, t in enumerate(contaminated_transforms) if isinstance(t, transforms.ToTensor)][0]
         
         # Insert Gaussian Blur before ToTensor
-        contaminated_transforms.insert(idx_toTensor, transforms.GaussianBlur(kernel_size = 11, sigma = self.blur_sigma))
+        contaminated_transforms.insert(idx_toTensor, transforms.GaussianBlur(kernel_size = 8 * self.blur_sigma - 1, sigma = self.blur_sigma))
 
         # Insert Gaussian Noise at the end
         contaminated_transforms.append(AddGaussianNoise(mean = 0.0, std = self.noise_std))
@@ -197,10 +264,13 @@ class UncertaintyDataModule(pl.LightningDataModule):
         ###################################
         # Combine them
         ###################################
-
+            
         self.test_dataset = UncertaintyDataset(self.test_dataset, is_contamination = 0)
         self.test_dataset_contaminate = UncertaintyDataset(self.test_dataset_contaminate, is_contamination = 1)
         self.test_dataset_uncontaminated = self.test_dataset
+
+        assert len(self.test_dataset) == len(self.test_dataset_contaminate)
+        print("%d test samples loaded." % len(self.test_dataset))
         
         self.test_dataset = CombinedDataset(self.test_dataset, self.test_dataset_contaminate)
 
@@ -297,3 +367,34 @@ class SVHN_UncertaintyDM(UncertaintyDataModule):
     
     def get_test_dataset(self, transform):
         return datasets.SVHN(root = self.data_dir, split = 'test', download = True, transform = transform)
+
+class ImageNet_Validation_UncertaintyDM(UncertaintyDataModule):
+    
+    n_classes: 1000
+
+    def __init__(
+        self,
+        **kwargs
+    ):
+        super().__init__(**kwargs)
+        self.n_classes = 1000
+
+    def prepare_data(self):
+        print("Loading raw datasets for the first time...")
+        datasets.ImageNet(root = './data/ILSVRC2012', split = 'val')
+
+    def get_standard_transforms(self):
+        normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                         std=[0.229, 0.224, 0.225])
+        return transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            normalize,
+        ])
+    
+    def get_train_dataset(self, transform):
+        return None
+    
+    def get_test_dataset(self, transform):
+        return datasets.ImageNet(root = './data/ILSVRC2012', split = 'val', transform = transform)

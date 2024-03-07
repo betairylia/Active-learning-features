@@ -151,6 +151,85 @@ class ResNetCIFARFactory(NetFactoryBase):
 
         return net, head
 
+class ResNet18ImageNetPretrainedFactory(NetFactoryBase):
+
+    def __init__(self, factory_args = None):
+        super(ResNet18ImageNetPretrainedFactory, self).__init__(factory_args)
+        self.args = factory_args
+
+    def getNets(self, input_shape, output_shape, hidden_dim = 1024, dropout_rate = 0.5):
+
+        assert input_shape[0] == 3
+        assert input_shape[1] == 224
+        assert input_shape[2] == 224
+        assert output_shape[0] == 1000
+
+        whole_net = resnet.resnet18(
+            pretrained = True,
+            act = lambda: nn.ReLU(inplace=False)
+        )
+
+        head = whole_net.fc
+        whole_net.fc = nn.Identity()
+        net = whole_net
+
+        # print(net)
+        # print(head)
+
+        return net, head
+
+class ResNet50ImageNetPretrainedFactory(NetFactoryBase):
+
+    def __init__(self, factory_args = None):
+        super(ResNet50ImageNetPretrainedFactory, self).__init__(factory_args)
+        self.args = factory_args
+
+    def getNets(self, input_shape, output_shape, hidden_dim = 1024, dropout_rate = 0.5):
+
+        assert input_shape[0] == 3
+        assert input_shape[1] == 224
+        assert input_shape[2] == 224
+        assert output_shape[0] == 1000
+
+        whole_net = resnet.resnet50(
+            pretrained = True,
+        )
+
+        head = whole_net.fc
+        whole_net.fc = nn.Identity()
+        net = whole_net
+
+        # print(net)
+        # print(head)
+
+        return net, head
+
+class WideResNet50ImageNetPretrainedFactory(NetFactoryBase):
+
+    def __init__(self, factory_args = None):
+        super(WideResNet50ImageNetPretrainedFactory, self).__init__(factory_args)
+        self.args = factory_args
+
+    def getNets(self, input_shape, output_shape, hidden_dim = 1024, dropout_rate = 0.5):
+
+        assert input_shape[0] == 3
+        assert input_shape[1] == 224
+        assert input_shape[2] == 224
+        assert output_shape[0] == 1000
+
+        whole_net = resnet.wide_resnet50_2(
+            pretrained = True,
+        )
+
+        head = whole_net.fc
+        whole_net.fc = nn.Identity()
+        net = whole_net
+
+        # print(net)
+        # print(head)
+
+        return net, head
+
 class LeNetFactory(NetFactoryBase):
 
     def __init__(self, factory_args = None):
@@ -191,7 +270,7 @@ class LeNetFactory(NetFactoryBase):
             nn.Flatten(),
             linear_block
         )
-        head = nn.Linear(84,10)
+        head = nn.Linear(84,output_shape[0])
 
         return net, head
 
@@ -200,5 +279,8 @@ net_dict =\
     'mlp': MLPFactory,
     'simple-cnn': CNNFactory,
     'resnet-cifar': ResNetCIFARFactory,
+    'resnet18-imagenet': ResNet18ImageNetPretrainedFactory,
+    'resnet50-imagenet': ResNet50ImageNetPretrainedFactory,
+    'wide-resnet50-imagenet': WideResNet50ImageNetPretrainedFactory,
     'lenet-5': LeNetFactory,
 }

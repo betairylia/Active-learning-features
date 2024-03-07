@@ -23,7 +23,7 @@ from utils import *
 
 from pytorch_lightning.loggers import WandbLogger
 
-from data_uncertainty import MNIST_UncertaintyDM, CIFAR10_UncertaintyDM, SVHN_UncertaintyDM #, FashionMNIST_UncertaintyDM
+from data_uncertainty import MNIST_UncertaintyDM, CIFAR10_UncertaintyDM, SVHN_UncertaintyDM, ImageNet_Validation_UncertaintyDM #, FashionMNIST_UncertaintyDM
 from recorder import Recorder
 
 from nets import net_dict
@@ -64,7 +64,11 @@ def get_data_module(
     data_dir='./data',
     do_partial_train = False,
     do_contamination = True,
-    use_full_trainset = True):
+    use_full_trainset = True,
+    test_set_max = -1,
+    is_binary = 0,
+    noise_std = 0.3,
+    blur_sigma = 2.0):
     
     args = {
         "data_dir": data_dir,
@@ -72,7 +76,11 @@ def get_data_module(
         "num_workers": num_workers,
         "do_partial_train": do_partial_train,
         "do_contamination": do_contamination,
-        "use_full_trainset": use_full_trainset
+        "use_full_trainset": use_full_trainset,
+        "test_set_max": test_set_max,
+        "is_binary": is_binary,
+        "noise_std": noise_std,
+        "blur_sigma": blur_sigma,
     }
 
     if dataset_name == 'mnist':
@@ -83,13 +91,24 @@ def get_data_module(
     
     elif dataset_name == 'svhn':
         main_dm = SVHN_UncertaintyDM(**args)
+
+    elif dataset_name == 'imagenet':
+        main_dm = ImageNet_Validation_UncertaintyDM(**args)
     
     return main_dm, input_size_dict[dataset_name]
 
 def BestAccuracySweep(num_sweeps = 256):
+    
     def foo(scores, labels):
+
         min_score = scores.min()
         max_score = scores.max()
+        
+        if torch.is_tensor(min_score):
+            min_score = min_score.item()
+        if torch.is_tensor(max_score):
+            max_score = max_score.item()
+
         best_acc = 0
         best_threshold = 0
         for threshold in torch.linspace(min_score, max_score, num_sweeps):
@@ -97,7 +116,9 @@ def BestAccuracySweep(num_sweeps = 256):
             if acc > best_acc:
                 best_acc = acc
                 best_threshold = threshold
+        
         return best_acc, best_threshold
+    
     return foo
 
 #################################################################
@@ -122,9 +143,15 @@ class SimpleModel(LightningModule):
         )
         
         if args.loss == 'mse':
-            self.loss = lambda x, y: F.mse_loss(x, F.one_hot(y, output_dim).detach().float())
+            if args.binary:
+                self.loss = lambda x, y: F.mse_loss(x, y.detach().float())
+            else:
+                self.loss = lambda x, y: F.mse_loss(x, F.one_hot(y, output_dim).detach().float())
         elif args.loss == 'cent':
-            self.loss = nn.CrossEntropyLoss()
+            if args.binary:
+                self.loss = lambda x, y: F.binary_cross_entropy_with_logits(x, y.detach().float())
+            else:
+                self.loss = nn.CrossEntropyLoss()
 
         # https://pytorchlightning.github.io/lightning-tutorials/notebooks/lightning_examples/cifar10-baseline.html
         # resnet = torchvision.models.resnet18(pretrained = False, num_classes = 10)
@@ -171,11 +198,14 @@ class SimpleModel(LightningModule):
         return raw_logits * self.args.lazy_scaling
 
     def training_step(self, batch, batch_nb):
-        x, y, o = batch
+        i, x, y, o = batch
 
         logits = self.scale_output(self(x)[0], x)
 
-        # loss = F.cross_entropy(self(x), y)
+        # Handle binary classification
+        if self.args.binary:
+            logits = logits.squeeze()
+
         loss = self.loss(logits, y)
 
         self.log("train_loss", loss)
@@ -183,21 +213,39 @@ class SimpleModel(LightningModule):
         return loss
     
     def validation_step(self, batch, batch_idx):
-        x, y, o = batch
+        
+        i, x, y, o = batch
         # logits = self(x)
         # loss = F.cross_entropy(logits, y)
+
+        self.val_index = i
+        self.val_full_batch = batch
+
         logits, uncertainty = self(x)
         logits = self.scale_output(logits, x)
 
+        # Handle logit and predictions (for binary / multi-class classification)
+        if self.args.binary:
+            logits = logits.squeeze()
+            preds = (logits > 0.5).long()
+        else:
+            preds = torch.argmax(logits, dim=1)
+
+        self.val_index = None
+        self.val_full_batch = None
+
         y[y >= self.output_dim] = -100
         loss = self.loss(logits, y)
-        preds = torch.argmax(logits, dim=1)
         acc = self.accuracy(preds, y)
         acc_seen = self.accuracy_seen(preds, y, o)
 
         if not self.visualized:
             self.visualized = True
-            self.logger.log_image(key = "test-set", images = [ImageMosaicSQ(x)], caption = ["".join(["1" if _o == 1 else "0" for _o in o.detach().cpu()])])
+            self.logger.log_image(
+                key = "test-set",
+                images = [ImageMosaicSQ(x)],
+                caption = ["".join(["1" if _o == 1 else "0" for _o in o.detach().cpu()])]
+            )
 
         self.val_uncertainty_scores.append(uncertainty)
         self.val_uncertainty_labels.append(o)
@@ -232,6 +280,35 @@ class SimpleModel(LightningModule):
         self.log("val_uncertain_seen", mean_uncertainty_seen, prog_bar=False)
         self.log("val_uncertain_unseen", mean_uncertainty_unseen, prog_bar=False)
 
+        # Parameter statistics
+        current_params = {k:v for k, v in self.net.named_parameters()}
+        current_params.update({k:v for k, v in self.head.named_parameters()})
+
+        init_params = {k:v for k, v in self.net_init.named_parameters()}
+        init_params.update({k:v for k, v in self.head_init.named_parameters()})
+
+        param_diff_avg = 0
+        param_norm_avg = 0
+        param_init_norm_avg = 0
+
+        for k in current_params.keys():
+
+            param_norm = current_params[k].abs().mean()
+            param_init_norm = init_params[k].abs().mean()
+            param_diff = (current_params[k] - init_params[k]).abs().mean() / param_init_norm
+
+            param_diff_avg += param_diff
+            param_norm_avg += param_norm
+            param_init_norm_avg += param_init_norm
+
+        param_diff_avg /= len(current_params)
+        param_norm_avg /= len(current_params)
+        param_init_norm_avg /= len(current_params)
+
+        self.log("param_diff_avg", param_diff_avg, prog_bar=False)
+        self.log("param_norm_avg", param_norm_avg, prog_bar=False)
+        self.log("param_init_norm_avg", param_init_norm_avg, prog_bar=False)
+
         self.val_uncertainty_scores = []
         self.val_uncertainty_labels = []
 
@@ -242,6 +319,10 @@ class SimpleModel(LightningModule):
     def on_test_epoch_end(self):
         # Here we just reuse the on_validation_epoch_end for testing
         return self.on_validation_epoch_end()
+
+    def on_test_epoch_start(self):
+        # Here we just reuse the on_validation_epoch_start for testing
+        return self.on_validation_epoch_start()
         
     def configure_optimizers(self):
         # return torch.optim.AdamW(self.parameters())
@@ -418,7 +499,7 @@ class NaiveEnsembleModel(NaiveEnsembleSummationModel):
 
     def training_step(self, batch, batch_nb):
 
-        x, y, o = batch
+        i, x, y, o = batch
 
         logits = self.scale_output(self(x)[0], x)
 
@@ -478,6 +559,16 @@ class NaiveEnsembleSummationModel_KernelNoiseOnly(NaiveEnsembleSummationModel):
             return individuals, uncertainty # ensemble_std
         else:
             return self.head.reduce(individuals, dim = 0), uncertainty # ensemble_std
+
+class RandomModel(SimpleModel):
+    
+    def forward(self, x):
+
+        self.disable_dropout(self.net)
+        self.disable_dropout(self.head)
+        logits = self.head(self.net(x))
+
+        return logits, torch.normal(torch.zeros(logits.shape[0], device = logits.device), torch.ones(logits.shape[0], device = logits.device))
 
 class NaiveDropoutModel(SimpleModel):
     
@@ -942,9 +1033,905 @@ class TestTimeOnly_GaussianInit_WassersteinModel(SimpleModel):
 
             return logits.mean(dim = 0), uncertainty.to(logits.device)
 
+class TestTimeOnly_NTK(SimpleModel):
+
+    def __init__(self, args, input_shape, output_dim = 10):
+        
+        super().__init__(args, input_shape, output_dim)
+
+        self.combined_net = nn.Sequential(self.net, self.head)
+        self.y_index = 0
+
+    def extra_init(self, reference_dl):
+
+        self.reference_dl = reference_dl 
+
+    def fnet_single_hvp(self, x, y_index = -1):
+
+        # Torch 2.0 / CUDA 11.7
+        # def foo(params):
+        #     return torch.func.functional_call(self, params, (x,))[0, y_index]
+
+        # Torch 1.13 / FuncTorch
+        def foo(params):
+
+            result = self.fnet(params, self.fbuffer, x)[0]
+
+            resolved_y_index = y_index
+            if resolved_y_index < 0:
+                resolved_y_index = torch.argmax(result)
+
+            return result[resolved_y_index]
+        
+        return foo
+
+    def on_validation_epoch_start(self):
+
+        torch.set_grad_enabled(True)
+
+        # 1. Extract parameters and make functional version of the network
+
+        # Torch 1.13 / FuncTorch
+        funcresult = make_functional_with_buffers(nn.Sequential(self.net, self.head))
+        self.fnet, _, self.fbuffer = funcresult
+        self.fparams = dict(self.combined_net.named_parameters())
+
+        # Torch 2.0 / CUDA 11.7
+        # self.fparams = dict(self.combined_net.named_parameters())
+
+        self.gradResults = DropoutHessianRecorder()
+
+        # Torch 2.0 / CUDA 11.7
+        # def fnet_single(params, x):
+        #     return torch.func.functional_call(self, params, (x,))
+
+        # print("Created functionalized network")
+
+        # LeNet-5 parameters:
+        # ipdb> print("\n".join([repr((p[0], p[1].shape)) for p in self.fparams.items()]))
+        # ('0.0.0.weight', torch.Size([6, 1, 5, 5]))
+        # ('0.0.0.bias', torch.Size([6]))
+        # ('0.0.3.weight', torch.Size([16, 6, 5, 5]))
+        # ('0.0.3.bias', torch.Size([16]))
+        # ('0.2.0.weight', torch.Size([120, 400]))
+        # ('0.2.0.bias', torch.Size([120]))
+        # ('0.2.2.weight', torch.Size([84, 120]))
+        # ('0.2.2.bias', torch.Size([84]))
+        # ('1.weight', torch.Size([10, 84]))
+        # ('1.bias', torch.Size([10]))
+
+        # Loop thru all reference data-points
+        for batch in self.reference_dl:
+            
+            i, x, y, o = batch
+            x = x.to(self.device)
+
+            # Feed-forward
+
+            # Torch 2.0 / CUDA 11.7
+            # hvp_result = torch.func.vhp(fnet_single_vhp(x, 0), self.fparams, masked_parameters).t()
+            # hvp_result = torch.func.vjp(torch.func.grad(fnet_single_hvp(x, self.y_index)), self.fparams)[1](masked_parameters).t()
+
+            # self.hvpResults.record(hvp_result)
+
+            # Torch 1.13 / FuncTorch
+            grad_result = grad(self.fnet_single_hvp(x, self.y_index))(to_unnamed(self.fparams))
+
+            # TODO: Multiply with D (:= \Theta^{-1}(x, X) ∂f L(X), i.e., NTK-normalized training direction)
+            # or simply unnormalized might be enough
+
+            self.gradResults.record(unnamed_tuple_to_named(self.fparams, grad_result))
+
+            # print("-", end = '')
+
+        # Store the running var / mean
+        # The results are stored in self.hvpResults and is accessible via self.hvpResults.mean() / self.hvpResults.variance().
+
+        # breakpoint()
+
+    def on_validation_epoch_end(self):
+        super().on_validation_epoch_end()
+        torch.set_grad_enabled(False)
+
+    def forward(self, x):
+
+        if self.training:
+
+            self.disable_dropout(self.net)
+            self.disable_dropout(self.head)
+            logits = self.head(self.net(x))
+            return logits, None
+
+        else:
+
+            # proxy
+            self.disable_dropout(self.net)
+            self.disable_dropout(self.head)
+
+            logits = self.head(self.net(x))
+
+            # Comment if 3b; Enable if 3a
+            # self.enable_dropout(self.net)
+            # self.enable_dropout(self.head)
+
+            len_x = x.shape[0]
+            full_x = x
+
+            ex_uncertainties = torch.zeros(len_x, device = x.device)
+
+            for j in range(len_x):
+
+                # print("%5d S" % j, end='')
+
+                x = full_x[j].unsqueeze(0)
+
+                # 3. Collect non-dropout statstics at datapoint x
+                grad_at_x = grad(self.fnet_single_hvp(x, self.y_index))(to_unnamed(self.fparams))
+                grad_tuple = unnamed_tuple_to_named(self.fparams, grad_at_x)
+
+                # 4. Dot-product the hvp var / mean with regular gradients @ evaluating data-points
+                ntk_prenorm = params_multiply(self.gradResults.mean(), grad_tuple)
+                ntk_norm = params_l2norm(ntk_prenorm)
+                ntk_eval = params_sum(ntk_prenorm)
+
+                if self.val_full_batch is not None:
+
+                    o = self.val_full_batch[3][j]
+
+                    if o == 1:
+                        self.log("NTK_eval_unseen", ntk_eval, on_epoch = True)
+                        self.log("NTK_2norm_unseen", ntk_norm, on_epoch = True)
+                        self.log("grad_2norm_unseen", params_l2norm(grad_tuple), on_epoch = True)
+                    else:
+                        self.log("NTK_eval_seen", ntk_eval, on_epoch = True)
+                        self.log("NTK_2norm_seen", ntk_norm, on_epoch = True)
+                        self.log("grad_2norm_seen", params_l2norm(grad_tuple), on_epoch = True)
+
+                extra_ntk_uncertainty =\
+                    ntk_norm
+                    # Tvar_Hvar +\
+                    # Tvar_Hepc +\
+                    # Tepc_Hvar
+                
+                ex_uncertainties[j] = ntk_norm.detach()
+
+                # print(".")
+
+            return logits, ex_uncertainties
+
+class TestTimeOnly_NTK_withInv(SimpleModel):
+
+    def __init__(self, args, input_shape, output_dim = 10):
+        
+        super().__init__(args, input_shape, output_dim)
+
+        self.combined_net = nn.Sequential(self.net, self.head)
+        self.y_index = 0
+
+    def extra_init(self, reference_dl):
+
+        self.reference_dl = reference_dl
+
+    def fnet_single_hvp(self, x, y_index = -1):
+
+        # Torch 2.0 / CUDA 11.7
+        # def foo(params):
+        #     return torch.func.functional_call(self, params, (x,))[0, y_index]
+
+        # Torch 1.13 / FuncTorch
+        def foo(params):
+
+            result = self.fnet(params, self.fbuffer, x)[0]
+
+            resolved_y_index = y_index
+            if resolved_y_index < 0:
+                resolved_y_index = torch.argmax(result)
+
+            return result[resolved_y_index]
+        
+        return foo
+
+    def on_validation_epoch_start(self):
+
+        torch.set_grad_enabled(True)
+
+        # 1. Extract parameters and make functional version of the network
+
+        # Torch 1.13 / FuncTorch
+        funcresult = make_functional_with_buffers(nn.Sequential(self.net, self.head))
+        self.fnet, _, self.fbuffer = funcresult
+        self.fparams = dict(self.combined_net.named_parameters())
+
+        # Torch 2.0 / CUDA 11.7
+        # self.fparams = dict(self.combined_net.named_parameters())
+
+        self.gradResults = DropoutHessianRecorder()
+
+        # Torch 2.0 / CUDA 11.7
+        # def fnet_single(params, x):
+        #     return torch.func.functional_call(self, params, (x,))
+
+        # print("Created functionalized network")
+
+        # LeNet-5 parameters:
+        # ipdb> print("\n".join([repr((p[0], p[1].shape)) for p in self.fparams.items()]))
+        # ('0.0.0.weight', torch.Size([6, 1, 5, 5]))
+        # ('0.0.0.bias', torch.Size([6]))
+        # ('0.0.3.weight', torch.Size([16, 6, 5, 5]))
+        # ('0.0.3.bias', torch.Size([16]))
+        # ('0.2.0.weight', torch.Size([120, 400]))
+        # ('0.2.0.bias', torch.Size([120]))
+        # ('0.2.2.weight', torch.Size([84, 120]))
+        # ('0.2.2.bias', torch.Size([84]))
+        # ('1.weight', torch.Size([10, 84]))
+        # ('1.bias', torch.Size([10]))
+
+        # Loop thru all reference data-points
+        for batch in self.reference_dl:
+            
+            i, x, y, o = batch
+            x = x.to(self.device)
+
+            # Feed-forward
+
+            # Torch 2.0 / CUDA 11.7
+            # hvp_result = torch.func.vhp(fnet_single_vhp(x, 0), self.fparams, masked_parameters).t()
+            # hvp_result = torch.func.vjp(torch.func.grad(fnet_single_hvp(x, self.y_index)), self.fparams)[1](masked_parameters).t()
+
+            # self.hvpResults.record(hvp_result)
+
+            # Torch 1.13 / FuncTorch
+            grad_result = grad(self.fnet_single_hvp(x, self.y_index))(to_unnamed(self.fparams))
+            grad_result = unnamed_tuple_to_named(self.fparams, grad_result)
+
+            # NTK Normalization
+            l2n_sq = params_l2norm_sq(grad_result)
+            grad_result = params_scale(grad_result, 1.0 / l2n_sq)
+
+            self.gradResults.record(grad_result)
+
+            # print("-", end = '')
+
+        # Store the running var / mean
+        # The results are stored in self.hvpResults and is accessible via self.hvpResults.mean() / self.hvpResults.variance().
+
+        # breakpoint()
+
+    def on_validation_epoch_end(self):
+        super().on_validation_epoch_end()
+        torch.set_grad_enabled(False)
+
+    def forward(self, x):
+
+        if self.training:
+
+            self.disable_dropout(self.net)
+            self.disable_dropout(self.head)
+            logits = self.head(self.net(x))
+            return logits, None
+
+        else:
+
+            # proxy
+            self.disable_dropout(self.net)
+            self.disable_dropout(self.head)
+
+            logits = self.head(self.net(x))
+
+            # Comment if 3b; Enable if 3a
+            # self.enable_dropout(self.net)
+            # self.enable_dropout(self.head)
+
+            len_x = x.shape[0]
+            full_x = x
+
+            ex_uncertainties = torch.zeros(len_x, device = x.device)
+
+            for j in range(len_x):
+
+                # print("%5d S" % j, end='')
+
+                x = full_x[j].unsqueeze(0)
+
+                # 3. Collect non-dropout statstics at datapoint x
+                grad_at_x = grad(self.fnet_single_hvp(x, self.y_index))(to_unnamed(self.fparams))
+                grad_tuple = unnamed_tuple_to_named(self.fparams, grad_at_x)
+
+                # 4. Dot-product the hvp var / mean with regular gradients @ evaluating data-points
+                ntk_prenorm = params_multiply(self.gradResults.mean(), grad_tuple)
+                ntk_norm = params_l2norm(ntk_prenorm)
+                ntk_eval = params_sum(ntk_prenorm)
+
+                if self.val_full_batch is not None:
+
+                    o = self.val_full_batch[3][j]
+
+                    if o == 1:
+                        self.log("NTK_eval_unseen", ntk_eval, on_epoch = True)
+                        self.log("NTK_2norm_unseen", ntk_norm, on_epoch = True)
+                        self.log("grad_2norm_unseen", params_l2norm(grad_tuple), on_epoch = True)
+                    else:
+                        self.log("NTK_eval_seen", ntk_eval, on_epoch = True)
+                        self.log("NTK_2norm_seen", ntk_norm, on_epoch = True)
+                        self.log("grad_2norm_seen", params_l2norm(grad_tuple), on_epoch = True)
+
+                extra_ntk_uncertainty =\
+                    ntk_norm
+                    # Tvar_Hvar +\
+                    # Tvar_Hepc +\
+                    # Tepc_Hvar
+                
+                ex_uncertainties[j] = ntk_norm.detach()
+
+                # print(".")
+
+            return logits, ex_uncertainties
+
+class TestTimeOnly_NTK_initialization(SimpleModel):
+
+    def __init__(self, args, input_shape, output_dim = 10):
+        
+        super().__init__(args, input_shape, output_dim)
+
+        self.combined_net = nn.Sequential(self.net, self.head)
+        self.combined_net_init = nn.Sequential(self.net_init, self.head_init)
+
+        self.y_index = 0
+        self.fnet_summary = None
+        self.grad_only_mode = False
+
+    def fnet_single_hvp(self, x, y_index = -1, summary = None):
+
+        # Torch 2.0 / CUDA 11.7
+        # def foo(params):
+        #     return torch.func.functional_call(self, params, (x,))[0, y_index]
+
+        # Torch 1.13 / FuncTorch
+        def foo(params):
+
+            result = self.fnet(params, self.fbuffer, x)[0]
+
+            resolved_y_index = y_index
+            if resolved_y_index < 0:
+                resolved_y_index = torch.argmax(result)
+
+            if summary == "softmax":
+                # result = F.softmax(result, dim = 0)
+                result = result *\
+                    torch.clamp(softmax_gradient_at_idx(result, resolved_y_index).detach(), 0.2, 5.0)
+            
+            elif summary == "mean":
+                result = torch.mean(result, dim = 0, keepdims = True)
+                resolved_y_index = 0
+
+            return result[resolved_y_index]
+        
+        return foo
+
+    def get_params_init_diff(self, params):
+        return params_substract(params, dict(self.combined_net_init.named_parameters()))
+
+    def on_validation_epoch_start(self):
+
+        # Torch 1.13 / FuncTorch
+        funcresult = make_functional_with_buffers(nn.Sequential(self.net, self.head))
+        self.fnet, _, self.fbuffer = funcresult
+        self.fparams = dict(self.combined_net.named_parameters())
+
+        self.params_diff = self.get_params_init_diff(self.fparams)
+
+        self.stats_recorder = DropoutHessianRecorder()
+
+    def on_validation_epoch_end(self):
+        super().on_validation_epoch_end()
+        torch.set_grad_enabled(False)
+
+        means = self.stats_recorder.mean()
+        variances = self.stats_recorder.variance()
+
+        for k in means.keys():
+            self.log("Gradient_means/" + k, means[k])
+
+        for k in variances.keys():
+            self.log("Gradient_variances/" + k, variances[k])
+
+    def obtain_uncertainty_score(self, x):
+
+        # 3. Collect non-dropout statstics at datapoint x
+        grad_at_x = grad(self.fnet_single_hvp(x, self.y_index, self.fnet_summary))(to_unnamed(self.fparams))
+        grad_tuple = unnamed_tuple_to_named(self.fparams, grad_at_x)
+
+        self.stats_recorder.record(grad_tuple)
+
+        # 4. Dot-product the hvp var / mean with regular gradients @ evaluating data-points
+        if self.grad_only_mode == False:
+            ntk_prenorm = params_multiply(self.params_diff, grad_tuple)
+        else:
+            ntk_prenorm = grad_tuple
+
+        ntk_norm = params_l2norm(ntk_prenorm)
+        # ntk_eval = params_sum(ntk_prenorm)
+
+        return ntk_norm
+
+    def forward(self, x):
+
+        if self.training:
+
+            self.disable_dropout(self.net)
+            self.disable_dropout(self.head)
+            logits = self.head(self.net(x))
+            return logits, None
+
+        else:
+
+            # proxy
+            self.disable_dropout(self.net)
+            self.disable_dropout(self.head)
+
+            logits = self.head(self.net(x))
+
+            # Comment if 3b; Enable if 3a
+            # self.enable_dropout(self.net)
+            # self.enable_dropout(self.head)
+
+            len_x = x.shape[0]
+            full_x = x
+
+            ex_uncertainties = torch.zeros(len_x, device = x.device)
+
+            for j in range(len_x):
+
+                # print("%5d S" % j, end='')
+
+                x = full_x[j].unsqueeze(0)
+                ntk_norm = self.obtain_uncertainty_score(x)
+
+                if self.val_full_batch is not None:
+
+                    o = self.val_full_batch[3][j]
+
+                    if o == 1:
+                        # self.log("NTK_eval_unseen", ntk_eval, on_epoch = True)
+                        self.log("NTK_2norm_unseen", ntk_norm, on_epoch = True)
+                        # self.log("grad_2norm_unseen", params_l2norm(grad_tuple), on_epoch = True)
+                    else:
+                        # self.log("NTK_eval_seen", ntk_eval, on_epoch = True)
+                        self.log("NTK_2norm_seen", ntk_norm, on_epoch = True)
+                        # self.log("grad_2norm_seen", params_l2norm(grad_tuple), on_epoch = True)
+
+                extra_ntk_uncertainty =\
+                    ntk_norm
+                    # Tvar_Hvar +\
+                    # Tvar_Hepc +\
+                    # Tepc_Hvar
+                
+                ex_uncertainties[j] = ntk_norm.detach()
+
+                # print(".")
+
+            return logits, ex_uncertainties
+
+class TestTimeOnly_NTK_initialization_classification(TestTimeOnly_NTK_initialization):
+
+    def __init__(self, args, input_shape, output_dim = 10):
+        
+        super().__init__(args, input_shape, output_dim)
+
+        self.fnet_summary = "softmax"
+        self.y_index = -1
+
+class TestTimeOnly_NTK_zero_initialization(TestTimeOnly_NTK_initialization):
+
+    def get_params_init_diff(self, params):
+        return params
+
+class TestTimeOnly_NTK_zero_initialization_classification(TestTimeOnly_NTK_initialization):
+
+    def __init__(self, args, input_shape, output_dim = 10):
+        
+        super().__init__(args, input_shape, output_dim)
+
+        self.fnet_summary = "softmax"
+        self.y_index = -1
+
+class TestTimeOnly_NTK_zero_initialization_classification_nosoftmax(TestTimeOnly_NTK_initialization):
+
+    def __init__(self, args, input_shape, output_dim = 10):
+        
+        super().__init__(args, input_shape, output_dim)
+
+        self.fnet_summary = None
+        self.y_index = -1
+
+class TestTimeOnly_NTK_zero_initialization_mean(TestTimeOnly_NTK_initialization):
+
+    def __init__(self, args, input_shape, output_dim = 10):
+        
+        super().__init__(args, input_shape, output_dim)
+
+        self.fnet_summary = "mean"
+        self.y_index = -1
+
+# Multi dimension variants
+class TestTimeOnly_NTK_zero_initialization_simple_multidim(TestTimeOnly_NTK_zero_initialization):
+
+    def __init__(self, args, input_shape, output_dim = 10):
+
+        super().__init__(args, input_shape, output_dim)
+
+        self.fnet_summary = None
+        self.y_index = -1
+
+        # parser.add_argument("--random_multidim", type=int, default=1)
+        # parser.add_argument("--num_multidim", type=int, default=32)
+
+        if args.random_multidim > 0:
+            self.multidim_idx = np.random.choice(output_dim, args.num_multidim, replace = False)
+        else:
+            self.multidim_idx = np.array([i for i in range(min(output_dim, args.num_multidim))])
+
+    def obtain_uncertainty_score(self, x):
+
+        scores = []
+
+        for dix in self.multidim_idx:
+            self.y_index = dix
+            scores.append(super().obtain_uncertainty_score(x))
+        
+        scores_mean = torch.stack(scores, dim = 0).mean(dim = 0)
+        return scores_mean
+
+
+from functorch import make_functional, make_functional_with_buffers, jvp, grad
+from func_dropout import *
+# ImportError: cannot import name 'hvp' from 'functorch'
+
+# TODO: FIXME:  Visalization is wrong. The r.v. is a dropout mask, then we need to plot (grad for parameter #j, hessian for parameter #j)
+#               for this particular mask, which is a loop thru entire dataset per mask.
+# class TestTimeOnly_HessianVariance_IndependenceTestVisualizer():
+   
+#     def __init__(self, args):
+
+#         self.keys = args.independence_check_layers
+#         self.ids = args.independence_check_dataid
+#         self.do_check = (self.self.independence_check_layers is not None and self.independence_check_dataid is not None)
+
+#         self.vis_sizeX = 3
+#         self.vis_sizeY = 3
+
+#         self.buffer = []
+    
+#     def visualize(self, data_id, row_header, data_dict_with_id, data_dict_general):
+
+#         if self.do_check == false:
+#             return
+
+#         if data_id is in self.ids:
+
+#             fig, axs = plt.subplots(1, 1 + len(self.keys), figsize = (self.vis_sizeX * len(self.keys), self.vis_sizeY))
+#             plt.tight_layout()
+            
+#             for key, with_id, general in params_zip(data_dict_with_id, data_dict_general):
+                
+#                 if key is in self.keys:
+                    
+#                     key_id = self.keys.index(key)
+
+#                     data_x = with_id.detach().cpu().numpy().flatten()
+#                     data_y = general.detach().cpu().numpy().flatten()
+
+#                     axs[1+key_id].scatter(data_x, data_y)
+#                     plt.axis('off')
+
+#             im = PIL.Image.frombytes('RGB', fig.canvas.get_width_height(),fig.canvas.tostring_rgb())
+#             self.buffer.append(im)
+
+#             plt.clf()
+#             plt.close()
+    
+#     def flush(self):
+
+#         if len(self.buffer) <= 0:
+#             return None
+
+#         dst = Image.new('RGB', (self.buffer[0].width, self.buffer[0].height * len(self.buffer)))
+#         for i in range(len(self.buffer)):
+#             dst.paste(self.buffer[i], (0, i * self.buffer[0].height))
+        
+#         self.buffer = []
+#         return dst
+
+class TestTimeOnly_HessianVariance(SimpleModel):
+
+    def __init__(self, args, input_shape, output_dim = 10):
+        
+        super().__init__(args, input_shape, output_dim)
+
+        self.combined_net = nn.Sequential(self.net, self.head)
+
+        self.indep_test_vis = TestTimeOnly_HessianVariance_IndependenceTestVisualizer(args)
+        
+        self.y_index = 0
+
+    def extra_init(self, reference_dl):
+
+        self.reference_dl = reference_dl
+
+    def fnet_single_hvp(self, x, y_index = -1):
+
+        # Torch 2.0 / CUDA 11.7
+        # def foo(params):
+        #     return torch.func.functional_call(self, params, (x,))[0, y_index]
+
+        # Torch 1.13 / FuncTorch
+        def foo(params):
+
+            result = self.fnet(params, self.fbuffer, x)[0]
+
+            resolved_y_index = y_index
+            if resolved_y_index < 0:
+                resolved_y_index = torch.argmax(result)
+
+            return result[resolved_y_index]
+        
+        return foo
+
+    def on_validation_epoch_start(self):
+
+        torch.set_grad_enabled(True)
+
+        # 1. Extract parameters and make functional version of the network
+
+        # Torch 1.13 / FuncTorch
+        funcresult = make_functional_with_buffers(nn.Sequential(self.net, self.head))
+        self.fnet, _, self.fbuffer = funcresult
+        self.fparams = dict(self.combined_net.named_parameters())
+
+        # Torch 2.0 / CUDA 11.7
+        # self.fparams = dict(self.combined_net.named_parameters())
+
+        self.hvpResults = DropoutHessianRecorder()
+
+        # Torch 2.0 / CUDA 11.7
+        # def fnet_single(params, x):
+        #     return torch.func.functional_call(self, params, (x,))
+
+        # print("Created functionalized network")
+
+        # LeNet-5 parameters:
+        # ipdb> print("\n".join([repr((p[0], p[1].shape)) for p in self.fparams.items()]))
+        # ('0.0.0.weight', torch.Size([6, 1, 5, 5]))
+        # ('0.0.0.bias', torch.Size([6]))
+        # ('0.0.3.weight', torch.Size([16, 6, 5, 5]))
+        # ('0.0.3.bias', torch.Size([16]))
+        # ('0.2.0.weight', torch.Size([120, 400]))
+        # ('0.2.0.bias', torch.Size([120]))
+        # ('0.2.2.weight', torch.Size([84, 120]))
+        # ('0.2.2.bias', torch.Size([84]))
+        # ('1.weight', torch.Size([10, 84]))
+        # ('1.bias', torch.Size([10]))
+
+        # Loop thru all reference data-points
+        for batch in self.reference_dl:
+            
+            i, x, y, o = batch
+            x = x.to(self.device)
+
+            # Feed-forward
+            # Generate dropout mask
+            # masked_parameters = apply_dropout(self.fparams)
+            masked_parameters = params_apply_p_minus_1_dropout(self.fparams, 0.5)
+            # TODO: Use dropout-p from arguments
+
+            # 2. hvp and accumulate running variance / mean
+
+            # Torch 2.0 / CUDA 11.7
+            # hvp_result = torch.func.vhp(fnet_single_vhp(x, 0), self.fparams, masked_parameters).t()
+            # hvp_result = torch.func.vjp(torch.func.grad(fnet_single_hvp(x, self.y_index)), self.fparams)[1](masked_parameters).t()
+
+            # self.hvpResults.record(hvp_result)
+
+            # Torch 1.13 / FuncTorch
+            hvp_result = jvp(grad(self.fnet_single_hvp(x, self.y_index)), (to_unnamed(self.fparams),), (to_unnamed(masked_parameters),))[0]
+
+            # TODO: Multiply with D (:= \Theta^{-1}(x, X) ∂f L(X), i.e., NTK-normalized training direction)
+            # or simply unnormalized might be enough
+
+            self.hvpResults.record(unnamed_tuple_to_named(self.fparams, hvp_result))
+
+            # print("-", end = '')
+
+        # Store the running var / mean
+        # The results are stored in self.hvpResults and is accessible via self.hvpResults.mean() / self.hvpResults.variance().
+
+        # breakpoint()
+
+    def on_validation_epoch_end(self):
+        super().on_validation_epoch_end()
+        torch.set_grad_enabled(False)
+
+    def forward(self, x):
+
+        if self.training:
+
+            self.disable_dropout(self.net)
+            self.disable_dropout(self.head)
+            logits = self.head(self.net(x))
+            return logits, None
+
+        else:
+
+            # proxy
+            self.disable_dropout(self.net)
+            self.disable_dropout(self.head)
+
+            logits = self.head(self.net(x))
+
+            # Comment if 3b; Enable if 3a
+            # self.enable_dropout(self.net)
+            # self.enable_dropout(self.head)
+
+            len_x = x.shape[0]
+            full_x = x
+
+            ex_uncertainties = torch.zeros(len_x, device = x.device)
+
+            for j in range(len_x):
+
+                # print("%5d S" % j, end='')
+
+                x = full_x[j].unsqueeze(0)
+
+                testPointStats = DropoutHessianRecorder()
+
+                # 3a. Collect statstics at the datapoint x
+                # for i in range(self.args.dropout_iters):
+
+                #     # Torch 1.13 / FuncTorch
+                #     # TODO: Change back to self.fparams (instead of masked_parameters; as dropout has already been enabled)
+                #     # masked_parameters = params_apply_dropout(self.fparams, 0.5)
+                #     grad_at_x = grad(self.fnet_single_hvp(x, self.y_index))(to_unnamed(self.fparams))
+                #     testPointStats.record(unnamed_tuple_to_named(self.fparams, grad_at_x))
+
+                #     # print("d", end='')
+
+                # test_var = testPointStats.variance()
+                # test_mean2 = params_pow(testPointStats.mean(), 2.0)
+
+                # 3b. Collect non-dropout statstics at datapoint x
+                grad_at_x = grad(self.fnet_single_hvp(x, self.y_index))(to_unnamed(self.fparams))
+                grad_tuple = unnamed_tuple_to_named(self.fparams, grad_at_x)
+                
+                test_var = grad_tuple
+                test_mean2 = grad_tuple
+
+                # 4. Dot-product the hvp var / mean with regular gradients @ evaluating data-points
+                hvp_var = self.hvpResults.variance()
+                hvp_mean2 = params_pow(self.hvpResults.mean(), 2.0)
+
+                # print("P", end='')
+
+                # Precision seems super rough ...
+                Tvar_Hvar = params_sum(params_multiply(test_var, hvp_var))
+                Tvar_Hepc = params_sum(params_multiply(test_var, hvp_mean2))
+                Tepc_Hvar = params_sum(params_multiply(test_mean2, hvp_var))
+
+                Tvar_L0   = params_l0norm(test_var)
+                Tvar_norm = params_l1norm(test_var)
+                Tepc_norm = params_l1norm(test_mean2)
+
+                # Visualization
+                # TODO: Visualization module ?
+                # TODO: FIXME:  Visalization is wrong. The r.v. is a dropout mask, then we need to plot (grad for parameter #j, hessian for parameter #j)
+                #               for this particular mask, which is a loop thru entire dataset per mask.
+
+                # if self.val_index is not None:
+                    # self.indep_test_vis.visualize(self.self.val_index[j], x, grad_tuple, self.hvpResults.mean())
+
+                self.log("Tvar_Hvar", Tvar_Hvar, on_epoch = True)
+                self.log("Tvar_Hepc", Tvar_Hepc, on_epoch = True)
+                self.log("Tepc_Hvar", Tepc_Hvar, on_epoch = True)
+
+                self.log("Tvar_norm", Tvar_norm, on_epoch = True)
+                self.log("Tepc_norm", Tepc_norm, on_epoch = True)
+
+                self.log("Tvar_L0", Tvar_L0, on_epoch = True)
+
+                extra_hvp_uncertainty =\
+                    Tvar_norm
+                    # Tvar_Hvar +\
+                    # Tvar_Hepc +\
+                    # Tepc_Hvar
+                
+                ex_uncertainties[j] = extra_hvp_uncertainty.detach()
+
+                # print(".")
+
+            return logits, ex_uncertainties
+
+class TestTimeOnly_HessianVariance_Negate(TestTimeOnly_HessianVariance):
+
+    def __init__(self, args, input_shape, output_dim = 10):
+        
+        super().__init__(args, input_shape, output_dim)
+    
+    def forward(self, x):
+
+        l, u = super().forward(x)
+
+        if u is not None:
+            u = -u
+        
+        return l, u
+
+from laplace import Laplace
+
+# Create a custom dataset for the training set
+class PickTwoDataset(torch.utils.data.Dataset):
+    def __init__(self, dataset, idxA, idxB):
+        self.dataset = dataset
+        self.idxA = idxA
+        self.idxB = idxB
+
+    def __getitem__(self, index):
+        d = self.dataset[index]
+        if type(d) is tuple:
+            return d[self.idxA], d[self.idxB]
+        else:
+            raise NotImplementedError
+
+    def __len__(self):
+        return len(self.dataset)
+
+class LaplaceRedux(SimpleModel):
+
+    def extra_init(self, reference_dl):
+
+        self.reference_dl = torch.utils.data.DataLoader(
+            PickTwoDataset(reference_dl.dataset, 1, 2),
+            batch_size = 16,
+            shuffle = False,
+            num_workers = 0
+        )
+
+    def forward(self, x):
+
+        if self.la is not None:
+            pred = self.la(x, link_approx='probit')
+        else:
+            print("[WARNING] LaplaceRedux in running without LA (currently using --model=default as a fallback)!")
+            logits = self.head(self.net(x))
+            pred = F.softmax(logits, dim = 1)
+
+        entropy = -torch.sum(pred_prob * torch.log(pred_prob + 1e-8), dim = 1)
+
+        return logits, entropy
+
+    def on_validation_epoch_start(self):
+
+        torch.set_grad_enabled(True)
+
+        # Assemble net & head
+        model = nn.Sequential(self.net, self.head)
+
+        # Fit the LA with self.reference_dl
+        self.la = Laplace(model, 'classification',
+             subset_of_weights='all',
+             hessian_structure='diag')
+        self.la.fit(self.reference_dl)
+
+        # Perhaps we don't optimize the prior here
+        # la.optimize_prior_precision(method='CV', val_loader=val_loader)
+
+    def on_validation_epoch_end(self):
+        super().on_validation_epoch_end()
+        torch.set_grad_enabled(False)
+
 models_dict =\
 {
     "default": SimpleModel,
+    "random": RandomModel,
     "mcdropout": MCDropoutModel,
     "tt_approx": TestTimeOnly_ApproximateDropoutModel,
     "naive-ensemble": NaiveEnsembleModel,
@@ -959,20 +1946,73 @@ models_dict =\
     "wasserstein-GaussianInit": TestTimeOnly_GaussianInit_WassersteinModel,
 
     "velocity-std": TestTimeOnly_GroundTruthInit_VelocityModel,
+
+    "hessian-variance": TestTimeOnly_HessianVariance,
+    "hessian-variance-negate": TestTimeOnly_HessianVariance_Negate,
+
+    "plain-ntk": TestTimeOnly_NTK,
+
+    "plain-ntk-withNTKinv": TestTimeOnly_NTK_withInv,
+    "plain-ntk-init": TestTimeOnly_NTK_initialization,
+    "plain-ntk-zero-init": TestTimeOnly_NTK_zero_initialization,
+    "plain-ntk-init-cls": TestTimeOnly_NTK_initialization_classification,
+    "plain-ntk-zero-init-cls": TestTimeOnly_NTK_zero_initialization_classification,
+    "plain-ntk-zero-init-cls-nosmax": TestTimeOnly_NTK_zero_initialization_classification_nosoftmax,
+    "plain-ntk-zero-init-mean": TestTimeOnly_NTK_zero_initialization_mean,
+
+    "plain-ntk-zero-init-simple-multidim": TestTimeOnly_NTK_zero_initialization_simple_multidim,
+
+    "la": LaplaceRedux,
 }
 
 #################################################################
-        
+
+def has_func(obj, func_name):
+    return hasattr(obj, func_name) and callable(getattr(obj, func_name))
+
 def main(hparams):
     
     seed = hparams.seed * (hparams.runid + 1)
     pl.seed_everything(seed)
     
-    main_datamodule, input_dim = get_data_module(hparams.dataset, hparams.batch_size, data_augmentation = (hparams.dataAug > 0), num_workers=hparams.num_workers, do_partial_train = hparams.do_partial_train, do_contamination = hparams.do_contamination)
+    main_datamodule, input_dim = get_data_module(
+        hparams.dataset,
+        hparams.batch_size,
+        data_augmentation = (hparams.dataAug > 0),
+        num_workers=hparams.num_workers,
+        do_partial_train = hparams.do_partial_train,
+        do_contamination = hparams.do_contamination,
+        test_set_max = hparams.test_set_max,
+        is_binary = hparams.binary,
+        noise_std = hparams.noise,
+        blur_sigma = hparams.blur)
     main_datamodule.setup()
 
     # Init our model
-    model = models_dict[hparams.model](hparams, input_dim, main_datamodule.n_classes)
+    model = models_dict[hparams.model](hparams, input_dim, main_datamodule.n_classes if not hparams.binary else 1)
+
+    # Dirty workaround
+    if has_func(model, "extra_init"):
+
+        if hparams.contaminate_ref:
+            ref_data = torch.utils.data.Subset(
+                main_datamodule.test_dataset,
+                np.random.choice(len(main_datamodule.test_dataset), size = (hparams.reference_data_count,))
+            )
+        else:
+            ref_data = torch.utils.data.Subset(
+                main_datamodule.train_dataset,
+                np.random.choice(len(main_datamodule.train_dataset), size = (hparams.reference_data_count,))
+            )
+
+        model.extra_init(
+            torch.utils.data.DataLoader(
+                ref_data,
+                batch_size = 1,
+                shuffle = False,
+                num_workers = 0
+            )
+        )
 
     wbgroup = GetArgsStr(hparams)
     if wbgroup is None:
@@ -988,10 +2028,10 @@ def main(hparams):
         )
 
     # Initialize a trainer
-    trainer = Trainer(
+    trainer = Trainer.from_argparse_args(
+        hparams,
         gpus=1,
         max_epochs=hparams.epochs,
-        progress_bar_refresh_rate=20,
         enable_checkpointing=False,
 
         # limit_val_batches = 0.0,
@@ -999,9 +2039,16 @@ def main(hparams):
         logger = wandb_logger
     )
 
-    # Train the model ⚡
-    trainer.fit(
-        model, 
+    if not hparams.no_train:
+        # Train the model ⚡
+        trainer.fit(
+            model, 
+            datamodule = main_datamodule
+        )
+    
+    # Test the model 🔍
+    trainer.test(
+        model,
         datamodule = main_datamodule
     )
 
@@ -1027,15 +2074,33 @@ if __name__ == "__main__":
     parser.add_argument("--use_full_trainset", type=int, default=1)
     parser.add_argument("--do_contamination", type=int, default=1)
     parser.add_argument("--num_workers", type=int, default=16)
+    parser.add_argument("--test_set_max", type=int, default=-1)
+
+    parser.add_argument("--binary", type=int, default=0, help="Convert the problem to a binary classification. Splits the dataset into halves.")
     
     # Model
     parser.add_argument("--hidden_dim", type=int, default=2048)
     parser.add_argument("--dropout_rate", type=float, default=0.85)
     parser.add_argument("--dropout_iters", type=int, default=10)
     parser.add_argument("--lazy_scaling", type=float, default=1)
+    parser.add_argument("--pointwise_linearization", type=int, default=1)
+
+    parser.add_argument("--reference_data_count", type=int, default=64)
+    parser.add_argument("--random_multidim", type=int, default=1)
+    parser.add_argument("--num_multidim", type=int, default=32)
+
+    # Visualization
+    # TODO: FIXME:  Visalization is wrong. The r.v. is a dropout mask, then we need to plot (grad for parameter #j, hessian for parameter #j)
+    #               for this particular mask, which is a loop thru entire dataset per mask.
+    # parser.add_argument("--independence_check_layers", nargs="+", type=str)
+    # parser.add_argument("--independence_check_dataid", nargs="+", type=int)
 
     # Training
+    parser.add_argument('--no_train', type=int, default=0, help="Don't train the model.")
     parser.add_argument('--dataAug', type=int, default=0, help="Data augmentation on(1) / off(0).")
+    parser.add_argument('--contaminate_ref', type=int, default=0, help="Use comtaminated data in reference dataset.")
+    parser.add_argument('--noise', type=float, default=0.3, help="Noise std for outliers.")
+    parser.add_argument('--blur', type=float, default=2.0, help="Gaussian blur sigma for outliers. ImageNet-C: [1, 2, 3, 4, 6]")
     parser.add_argument('--optim', type=str, default='sgd', help="Optimizer type: ['sgd', 'adamw'].")
     parser.add_argument('--batch_size', type=int, default=128, help="Batch size for training.")
     parser.add_argument('--epochs', type=int, default=50, help="Number of epochs for training.")
@@ -1049,13 +2114,16 @@ if __name__ == "__main__":
     args = parent_parser.parse_args()
 
     args.dataset = args.dataset.lower()
-    
+
     # Process arguments a bit
     args.runid = args.aaarunid
     del(args.aaarunid)
     
     if args.dataAug == 0:
         args.augTrials = 1
+
+    # if args.no_train:
+        # args.batch_size = 1
 
     print("Args: %s" % vars(args))
 
