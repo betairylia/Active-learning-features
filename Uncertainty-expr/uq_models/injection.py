@@ -13,3 +13,5 @@ class InjectTest(SimpleModel):
         self.combined_net = InjectNet(self.combined_net)
 
         self.combined_net_init = nn.Sequential(self.net_init, self.head_init)
+
+        breakpoint()
