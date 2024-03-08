@@ -1865,7 +1865,7 @@ class TestTimeOnly_HessianVariance_Negate(TestTimeOnly_HessianVariance):
         
         return l, u
 
-from laplace import Laplace
+# from laplace import Laplace
 
 # Create a custom dataset for the training set
 class PickTwoDataset(torch.utils.data.Dataset):
