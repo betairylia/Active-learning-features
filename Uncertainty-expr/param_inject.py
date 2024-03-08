@@ -12,6 +12,8 @@ def Inject(module):
 def InjectNet(net):
     # TODO
 
+    breakpoint() 
+
 ####################################
 ## ↓↓ Injector implementations ↓↓ ##
 ####################################
