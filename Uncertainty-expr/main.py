@@ -36,7 +36,7 @@ import copy
 import ot
 
 import uq_models as uq
-from uq import SimpleModel
+from uq_models import SimpleModel
 
 #################################################
 
@@ -100,29 +100,6 @@ def get_data_module(
     
     return main_dm, input_size_dict[dataset_name]
 
-def BestAccuracySweep(num_sweeps = 256):
-    
-    def foo(scores, labels):
-
-        min_score = scores.min()
-        max_score = scores.max()
-        
-        if torch.is_tensor(min_score):
-            min_score = min_score.item()
-        if torch.is_tensor(max_score):
-            max_score = max_score.item()
-
-        best_acc = 0
-        best_threshold = 0
-        for threshold in torch.linspace(min_score, max_score, num_sweeps):
-            acc = ((scores >= threshold) == labels).float().mean()
-            if acc > best_acc:
-                best_acc = acc
-                best_threshold = threshold
-        
-        return best_acc, best_threshold
-    
-    return foo
 
 #################################################################
 
@@ -1729,7 +1706,7 @@ models_dict =\
 
     "la": LaplaceRedux,
 
-    "inject-test": InjectTest,
+    "inject-test": uq.InjectTest,
 }
 
 #################################################################

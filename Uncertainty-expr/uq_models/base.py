@@ -35,6 +35,30 @@ import math
 import copy
 import ot
 
+def BestAccuracySweep(num_sweeps = 256):
+    
+    def foo(scores, labels):
+
+        min_score = scores.min()
+        max_score = scores.max()
+        
+        if torch.is_tensor(min_score):
+            min_score = min_score.item()
+        if torch.is_tensor(max_score):
+            max_score = max_score.item()
+
+        best_acc = 0
+        best_threshold = 0
+        for threshold in torch.linspace(min_score, max_score, num_sweeps):
+            acc = ((scores >= threshold) == labels).float().mean()
+            if acc > best_acc:
+                best_acc = acc
+                best_threshold = threshold
+        
+        return best_acc, best_threshold
+    
+    return foo
+
 class SimpleModel(LightningModule):
     def __init__(self, args, input_shape, output_dim = 10):
         super().__init__()
