@@ -26,17 +26,17 @@ def InjectNet(net, *args, **kwargs):
     return net
 
 def enable_perturb(module, *args, **kwargs):
-    for each_module in m.modules():
+    for each_module in module.modules():
         if isinstance(each_module, ParameterInjector):
             each_module.enable(*args, **kwargs)
 
 def disable_perturb(module, *args, **kwargs):
-    for each_module in m.modules():
+    for each_module in module.modules():
         if isinstance(each_module, ParameterInjector):
             each_module.disable(*args, **kwargs)
 
 def resample_perturb(module, *args, **kwargs):
-    for each_module in m.modules():
+    for each_module in module.modules():
         if isinstance(each_module, ParameterInjector):
             each_module.sample(*args, **kwargs)
 
@@ -73,19 +73,22 @@ class Linear_ParameterInjector(ParameterInjector):
         self.enabled = False
 
     def enable(self, *args, **kwargs):
-        print("Enabled Linear_PI")
+        # print("Enabled Linear_PI")
         self.enabled = True
     
     def disable(self, *args, **kwargs):
-        print("Disabled Linear_PI")
+        # print("Disabled Linear_PI")
         self.enabled = False
     
     def sample(self, *args, **kwargs):
-        self.weight_inject = torch.normal(
-            mean = torch.ones_like(self.module.weight),
-            std = self.module.weight * 0.1,
-            device = self.module.weight.device)
+        # self.weight_inject = torch.normal(
+        #     mean = torch.ones_like(self.module.weight),
+        #     std = self.module.weight * 0.1,
+        #     device = self.module.weight.device)
         
+        self.weight_inject = torch.randn(*self.module.weight.shape, device = self.module.weight.device)
+        self.weight_inject = self.weight_inject * self.module.weight
+
         # TODO: bias
 
     def forward(self, x):

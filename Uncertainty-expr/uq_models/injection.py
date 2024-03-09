@@ -1,4 +1,5 @@
 import torch
+from torch.nn import functional as F
 from .base import SimpleModel
 
 from .param_inject import *
