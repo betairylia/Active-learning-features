@@ -6,24 +6,35 @@ from torch import nn
 def Inject(module, *args, **kwargs):
 
     if isinstance(module, nn.Linear):
+        print("[Injector] Supported layer: nn.Linear")
         return Linear_ParameterInjector(module)
 
     else:
-        print("[Injector] Unsupported layer: %s, Ignoring!" % str(module))
+        print("[Injector] Unsupported layer: %s, Ignoring!" % module.__class__.__name__)
         return None
 
-def InjectNet(net, *args, **kwargs):
+def InjectNet(net, depth = 0, *args, **kwargs):
     # TODO
     # ref: https://github.com/baal-org/baal/blob/b9435080b7bdbd1c75722370ac833e97380d38c0/baal/bayesian/common.py#L52
 
+    if depth > 100:
+        print("[INJECTOR] MAX RECURSION DEPTH")
+        return False
+
     for name, child in net.named_children():
         new_module: Optional[nn.Module] = Inject(child, *args, **kwargs)
-
+        
         if new_module is not None:
             new_module.train(mode = child.training)
             net.add_module(name, new_module)
     
-    return net
+        # Do it recursively
+        InjectNet(child, depth+1, *args, **kwargs)
+
+    if depth == 0:
+        print(net)
+
+    return True
 
 def enable_perturb(module, *args, **kwargs):
     for each_module in module.modules():
@@ -87,15 +98,16 @@ class Linear_ParameterInjector(ParameterInjector):
         #     device = self.module.weight.device)
         
         self.weight_inject = torch.randn(*self.module.weight.shape, device = self.module.weight.device)
-        self.weight_inject = self.weight_inject * self.module.weight
+        self.weight_inject = 0.1 * self.weight_inject * self.module.weight
 
         # TODO: bias
 
     def forward(self, x):
 
         if self.enabled:
-            self.module.weight = self.weight_original + self.weight_inject
-            self.module.bias = self.bias_original + self.bias_inject
+            self.module.weight = nn.Parameter(self.weight_original + self.weight_inject)
+            # TODO: bias
+            # self.module.bias = nn.Parameter(self.bias_original + self.bias_inject)
             return self.module(x)
 
         else:

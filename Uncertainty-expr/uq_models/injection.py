@@ -11,7 +11,7 @@ class InjectTest(SimpleModel):
         super().__init__(args, input_shape, output_dim)
 
         self.combined_net = nn.Sequential(self.net, self.head)
-        self.combined_net = InjectNet(self.combined_net)
+        InjectNet(self.combined_net)
 
         self.combined_net_init = nn.Sequential(self.net_init, self.head_init)
 
@@ -31,7 +31,7 @@ class InjectTest(SimpleModel):
             probs = []
 
             for i in range(self.args.dropout_iters):
-                logits.append(self.head(self.net(x)))
+                logits.append(self.combined_net(x))
                 pred_prob = F.softmax(logits[-1], dim = 1)
                 probs.append(pred_prob)
 
