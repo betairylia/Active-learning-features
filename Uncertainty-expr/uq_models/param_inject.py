@@ -9,6 +9,10 @@ def Inject(module, *args, **kwargs):
         print("[Injector] Supported layer: nn.Linear")
         return Linear_ParameterInjector(module)
 
+    elif isinstance(module, nn.Conv2d):
+        print("[Injector] Supported layer: nn.Conv2d")
+        return Linear_ParameterInjector(module)
+
     else:
         print("[Injector] Unsupported layer: %s, Ignoring!" % module.__class__.__name__)
         return None
@@ -78,8 +82,9 @@ class Linear_ParameterInjector(ParameterInjector):
         self.weight_original = self.module.weight
 
         # bias
-        self.bias_inject = torch.zeros_like(self.module.bias)
-        self.bias_original = self.module.bias
+        if self.module.bias is not None:
+            self.bias_inject = torch.zeros_like(self.module.bias)
+            self.bias_original = self.module.bias
 
         self.enabled = False
 
@@ -112,5 +117,6 @@ class Linear_ParameterInjector(ParameterInjector):
 
         else:
             self.module.weight = self.weight_original
-            self.module.bias = self.bias_original
+            # self.module.bias = self.bias_original
             return self.module(x)
+

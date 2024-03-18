@@ -229,6 +229,9 @@ class SimpleModel(LightningModule):
 
         for k in current_params.keys():
 
+            if k not in init_params.keys():
+                continue
+
             param_norm = current_params[k].abs().mean()
             param_init_norm = init_params[k].abs().mean()
             param_diff = (current_params[k] - init_params[k]).abs().mean() / param_init_norm
