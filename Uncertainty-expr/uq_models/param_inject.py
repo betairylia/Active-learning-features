@@ -7,11 +7,11 @@ def Inject(module, *args, **kwargs):
 
     if isinstance(module, nn.Linear):
         print("[Injector] Supported layer: nn.Linear")
-        return Linear_ParameterInjector(module)
+        return Linear_ParameterInjector(module, *args, **kwargs)
 
     elif isinstance(module, nn.Conv2d):
         print("[Injector] Supported layer: nn.Conv2d")
-        return Linear_ParameterInjector(module)
+        return Linear_ParameterInjector(module, *args, **kwargs)
 
     else:
         print("[Injector] Unsupported layer: %s, Ignoring!" % module.__class__.__name__)
@@ -72,10 +72,14 @@ class ParameterInjector(nn.Module):
 
 class Linear_ParameterInjector(ParameterInjector):
 
-    def __init__(self, moduleToWrap):
+    def __init__(self, moduleToWrap, *args, **kwargs):
         
         super().__init__()
         self.module = moduleToWrap
+        
+        self.noise_norm = 0.1
+        if 'noise_norm' in kwargs:
+            self.noise_norm = kwargs['noise_norm']
 
         # weight
         self.weight_inject = torch.zeros_like(self.module.weight)
@@ -103,7 +107,7 @@ class Linear_ParameterInjector(ParameterInjector):
         #     device = self.module.weight.device)
         
         self.weight_inject = torch.randn(*self.module.weight.shape, device = self.module.weight.device)
-        self.weight_inject = 0.1 * self.weight_inject * self.module.weight
+        self.weight_inject = self.noise_norm * self.weight_inject * self.module.weight
 
         # TODO: bias
 

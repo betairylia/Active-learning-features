@@ -10,8 +10,10 @@ class InjectTest(SimpleModel):
         
         super().__init__(args, input_shape, output_dim)
 
+        self.perturb_power = args.perturb_power 
+        
         self.combined_net = nn.Sequential(self.net, self.head)
-        InjectNet(self.combined_net)
+        InjectNet(self.combined_net, noise_norm = self.perturb_power)
 
         self.combined_net_init = nn.Sequential(self.net_init, self.head_init)
 
