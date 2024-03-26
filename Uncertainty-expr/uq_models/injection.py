@@ -36,6 +36,7 @@ class InjectTest(SimpleModel):
                 logits.append(self.combined_net(x))
                 pred_prob = F.softmax(logits[-1], dim = 1)
                 probs.append(pred_prob)
+                resample_perturb(self.combined_net)
 
             logits = torch.stack(logits, dim = 0)
             probs = torch.stack(probs, dim = 0)

@@ -1802,11 +1802,11 @@ if __name__ == "__main__":
     # TODO: NTK - https://pytorch.org/functorch/stable/notebooks/neural_tangent_kernels.html
     parent_parser = ArgumentParser()
     
-    parent_parser = trainer.add_argparse_args(parent_parser)
+    parent_parser = Trainer.add_argparse_args(parent_parser)
     
-    parser = parent_parser.add_argument_group("model hyper-parameters")
+    parser = parent_parser.add_argument_group("Model Hyper-parameters")
     
-    parser = parent_parser.add_argument_group("active learning related")
+    parser = parent_parser.add_argument_group("Active Learning related")
     parser.add_argument("--heuristic", type=str, default="random")
     parser.add_argument("--loss", type=str, default="cent") # cent, mse
     parser.add_argument("--epochs_per_query", type=int, default=25)
@@ -1820,9 +1820,9 @@ if __name__ == "__main__":
     parser.add_argument("--num_workers", type=int, default=16)
     parser.add_argument("--test_set_max", type=int, default=-1)
 
-    parser.add_argument("--binary", type=int, default=0, help="convert the problem to a binary classification. splits the dataset into halves.")
+    parser.add_argument("--binary", type=int, default=0, help="Convert the problem to a binary classification. Splits the dataset into halves.")
     
-    # model
+    # Model
     parser.add_argument("--hidden_dim", type=int, default=2048)
     parser.add_argument("--dropout_rate", type=float, default=0.85)
     parser.add_argument("--dropout_iters", type=int, default=10)
@@ -1835,27 +1835,21 @@ if __name__ == "__main__":
 
     parser.add_argument("--perturb_power", type=float, default=0.1)
 
-    # parser.add_argument("--perturb_mul_b1", type=float, default=1.0)
-    # parser.add_argument("--perturb_mul_b2", type=float, default=1.0)
-    # parser.add_argument("--perturb_mul_b3", type=float, default=1.0)
-    # parser.add_argument("--perturb_mul_b4", type=float, default=1.0)
-    # parser.add_argument("--perturb_mul_b5", type=float, default=1.0)
-
-    # visualization
-    # todo: fixme:  visalization is wrong. the r.v. is a dropout mask, then we need to plot (grad for parameter #j, hessian for parameter #j)
+    # Visualization
+    # TODO: FIXME:  Visalization is wrong. The r.v. is a dropout mask, then we need to plot (grad for parameter #j, hessian for parameter #j)
     #               for this particular mask, which is a loop thru entire dataset per mask.
     # parser.add_argument("--independence_check_layers", nargs="+", type=str)
     # parser.add_argument("--independence_check_dataid", nargs="+", type=int)
 
-    # training
-    parser.add_argument('--no_train', type=int, default=0, help="don't train the model.")
-    parser.add_argument('--dataaug', type=int, default=0, help="data augmentation on(1) / off(0).")
-    parser.add_argument('--contaminate_ref', type=int, default=0, help="use comtaminated data in reference dataset.")
-    parser.add_argument('--noise', type=float, default=0.3, help="noise std for outliers.")
-    parser.add_argument('--blur', type=float, default=2.0, help="gaussian blur sigma for outliers. imagenet-c: [1, 2, 3, 4, 6]")
-    parser.add_argument('--optim', type=str, default='sgd', help="optimizer type: ['sgd', 'adamw'].")
-    parser.add_argument('--batch_size', type=int, default=128, help="batch size for training.")
-    parser.add_argument('--epochs', type=int, default=50, help="number of epochs for training.")
+    # Training
+    parser.add_argument('--no_train', type=int, default=0, help="Don't train the model.")
+    parser.add_argument('--dataAug', type=int, default=0, help="Data augmentation on(1) / off(0).")
+    parser.add_argument('--contaminate_ref', type=int, default=0, help="Use comtaminated data in reference dataset.")
+    parser.add_argument('--noise', type=float, default=0.3, help="Noise std for outliers.")
+    parser.add_argument('--blur', type=float, default=2.0, help="Gaussian blur sigma for outliers. ImageNet-C: [1, 2, 3, 4, 6]")
+    parser.add_argument('--optim', type=str, default='sgd', help="Optimizer type: ['sgd', 'adamw'].")
+    parser.add_argument('--batch_size', type=int, default=128, help="Batch size for training.")
+    parser.add_argument('--epochs', type=int, default=50, help="Number of epochs for training.")
     parser.add_argument('--augTrials', type=int, default=4, help="Trials per augmentation (ignored if augmentation disabled)")
     
     parser = parent_parser.add_argument_group("Run metadata / WandB sweeps")

@@ -9,6 +9,7 @@ from torchvision.transforms import transforms
 import torchvision.transforms as transforms
 
 import numpy as np
+import math
 
 class AddGaussianNoise(object):
     def __init__(self, mean=0., std=1.):
@@ -251,7 +252,9 @@ class UncertaintyDataModule(pl.LightningDataModule):
         idx_toTensor = [i for i, t in enumerate(contaminated_transforms) if isinstance(t, transforms.ToTensor)][0]
         
         # Insert Gaussian Blur before ToTensor
-        contaminated_transforms.insert(idx_toTensor, transforms.GaussianBlur(kernel_size = 8 * self.blur_sigma - 1, sigma = self.blur_sigma))
+        if self.blur_sigma > 0:
+            kernel_size = math.ceil(8 * self.blur_sigma - 1) // 2 * 2 + 1
+            contaminated_transforms.insert(idx_toTensor, transforms.GaussianBlur(kernel_size = max(3, kernel_size), sigma = self.blur_sigma))
 
         # Insert Gaussian Noise at the end
         contaminated_transforms.append(AddGaussianNoise(mean = 0.0, std = self.noise_std))
