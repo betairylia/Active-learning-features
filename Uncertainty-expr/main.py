@@ -1715,7 +1715,20 @@ def has_func(obj, func_name):
     return hasattr(obj, func_name) and callable(getattr(obj, func_name))
 
 def main(hparams):
-    
+
+    wbgroup = GetArgsStr(hparams)
+    if wbgroup is None:
+        wandb_logger = WandbLogger(
+            project="TT-uncertainty-estimation",
+            config = vars(hparams),
+        )
+    else:
+        wandb_logger = WandbLogger(
+            project="TT-uncertainty-estimation",
+            config = vars(hparams),
+            group = wbgroup
+        )
+
     seed = hparams.seed * (hparams.runid + 1)
     pl.seed_everything(seed)
     
@@ -1756,19 +1769,6 @@ def main(hparams):
                 shuffle = False,
                 num_workers = 0
             )
-        )
-
-    wbgroup = GetArgsStr(hparams)
-    if wbgroup is None:
-        wandb_logger = WandbLogger(
-            project="TT-uncertainty-estimation",
-            config = vars(hparams),
-        )
-    else:
-        wandb_logger = WandbLogger(
-            project="TT-uncertainty-estimation",
-            config = vars(hparams),
-            group = wbgroup
         )
 
     # Initialize a trainer
@@ -1833,7 +1833,10 @@ if __name__ == "__main__":
     parser.add_argument("--random_multidim", type=int, default=1)
     parser.add_argument("--num_multidim", type=int, default=32)
 
-    parser.add_argument("--perturb_power", type=float, default=0.1)
+    parser.add_argument("--perturb_power", type=float, default=-1, help = "Overrides perturb_min / max if set to value above 0")
+    parser.add_argument("--perturb_min", type=float, default=0.1, help = "Perturb noise norm for 1st layer")
+    parser.add_argument("--perturb_max", type=float, default=0.1, help = "Perturb noise norm for last layer")
+    parser.add_argument("--perturb_nonlinear", type=float, default=0.0, help = "Perturb noise norm curve nonlinearity; >0 => more change towards last layer | <0 => more change towards first layer")
 
     # Visualization
     # TODO: FIXME:  Visalization is wrong. The r.v. is a dropout mask, then we need to plot (grad for parameter #j, hessian for parameter #j)

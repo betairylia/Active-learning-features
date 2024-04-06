@@ -3,6 +3,9 @@ from typing import Callable, Optional
 import torch
 from torch import nn
 
+import math
+import wandb
+
 def Inject(module, *args, **kwargs):
 
     if isinstance(module, nn.Linear):
@@ -17,7 +20,14 @@ def Inject(module, *args, **kwargs):
         print("[Injector] Unsupported layer: %s, Ignoring!" % module.__class__.__name__)
         return None
 
-def InjectNet(net, depth = 0, *args, **kwargs):
+def InjectNet(
+        net,
+        depth = 0,
+        layers = [],
+        perturb_nonlinear = 0.0,
+        perturb_min = 0.1,
+        perturb_max = 0.1,
+        *args, **kwargs):
     # TODO
     # ref: https://github.com/baal-org/baal/blob/b9435080b7bdbd1c75722370ac833e97380d38c0/baal/bayesian/common.py#L52
 
@@ -26,19 +36,31 @@ def InjectNet(net, depth = 0, *args, **kwargs):
         return False
 
     for name, child in net.named_children():
+        # print("[INJECTOR] Current layer: %s" % name)
         new_module: Optional[nn.Module] = Inject(child, *args, **kwargs)
         
         if new_module is not None:
+
             new_module.train(mode = child.training)
             net.add_module(name, new_module)
+            
+            # Maintain a list of all injected layers, with their order in `net.named_children()`
+            layers.append(new_module)
     
         # Do it recursively
-        InjectNet(child, depth+1, *args, **kwargs)
+        InjectNet(child, depth+1, layers, *args, **kwargs)
 
     if depth == 0:
         print(net)
 
-    return True
+        for i, layer in enumerate(layers):
+            layer.set_norm(
+                (((i / (len(layers) - 1)) if len(layers) > 1 else 1) ** math.exp(perturb_nonlinear)) * (perturb_max - perturb_min) + perturb_min
+            )
+            # print(layer.noise_norm)
+            wandb.log({"noise_norm": layer.noise_norm, "layer_index": i})
+
+    return layers
 
 def enable_perturb(module, *args, **kwargs):
     for each_module in module.modules():
@@ -60,6 +82,9 @@ def resample_perturb(module, *args, **kwargs):
 ####################################
 
 class ParameterInjector(nn.Module):
+
+    def set_norm(self, noise_norm):
+        pass
 
     def enable(self, *args, **kwargs):
         pass
@@ -91,6 +116,9 @@ class Linear_ParameterInjector(ParameterInjector):
             self.bias_original = self.module.bias
 
         self.enabled = False
+
+    def set_norm(self, noise_norm):
+        self.noise_norm = noise_norm
 
     def enable(self, *args, **kwargs):
         # print("Enabled Linear_PI")

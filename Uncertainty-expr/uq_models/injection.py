@@ -9,11 +9,18 @@ class InjectTest(SimpleModel):
     def __init__(self, args, input_shape, output_dim = 10):
         
         super().__init__(args, input_shape, output_dim)
-
-        self.perturb_power = args.perturb_power 
+        
+        self.perturb_nonlinear = args.perturb_nonlinear
+        self.perturb_min = args.perturb_min
+        self.perturb_max = args.perturb_max
         
         self.combined_net = nn.Sequential(self.net, self.head)
-        InjectNet(self.combined_net, noise_norm = self.perturb_power)
+        InjectNet(
+            self.combined_net,
+            perturb_nonlinear = self.perturb_nonlinear,
+            perturb_min = self.perturb_min,
+            perturb_max = self.perturb_max
+        )
 
         self.combined_net_init = nn.Sequential(self.net_init, self.head_init)
 

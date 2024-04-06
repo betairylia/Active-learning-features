@@ -22,6 +22,7 @@ parser.add_argument('exec', type = str, help="The program file *.py that will be
 parser.add_argument('--runs', type = int, default = 1, help="How many runs for each HP setup.")
 parser.add_argument('--gpus', type = str, default = '0', help="GPUs to be used.")
 parser.add_argument('-g', '--greedy', action = 'store_true', help="Use greedy search instead of grid search. Order are determined by ? order - I have no idea.")
+parser.add_argument('--yaml_only', action = 'store_true', help="Generates the wandb YAML and exit")
 parsed, unknown = parser.parse_known_args()
 
 for arg in unknown:
@@ -37,6 +38,7 @@ hpgrid.pop("exec")
 hpgrid.pop("runs")
 hpgrid.pop("greedy")
 hpgrid.pop("gpus")
+hpgrid.pop("yaml_only")
 for hp in hpgrid:
     hpgrid[hp] = hpgrid[hp].split(',')
 
@@ -84,6 +86,11 @@ with open(os.path.join(pthprefix, 'sweep.yaml'), 'w') as fp:
     fp.write("        value: \"%s\"\n" % keyargs)
 
 os.system("cat %s" % os.path.join(pthprefix, 'sweep.yaml'))
-os.system("wandb sweep %s" % (os.path.join(pthprefix, 'sweep.yaml')))
 
-os.system("python3 wandb_sweep_agents_batchedrunner.py --gpus %s" % (_gpusstr))
+if not args.yaml_only:
+    os.system("wandb sweep %s" % (os.path.join(pthprefix, 'sweep.yaml')))
+    os.system("python3 wandb_sweep_agents_batchedrunner.py --gpus %s" % (_gpusstr))
+else:
+    print("YAML generated at %s" % os.path.join(pthprefix, 'sweep.yaml'))
+    print("You can start the sweep by `%s`" % ("wandb sweep %s" % (os.path.join(pthprefix, 'sweep.yaml'))))
+

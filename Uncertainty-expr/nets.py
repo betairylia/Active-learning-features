@@ -160,9 +160,9 @@ class ResNet18ImageNetPretrainedFactory(NetFactoryBase):
     def getNets(self, input_shape, output_shape, hidden_dim = 1024, dropout_rate = 0.5):
 
         assert input_shape[0] == 3
-        assert input_shape[1] == 224
-        assert input_shape[2] == 224
-        assert output_shape[0] == 1000
+        # assert input_shape[1] == 224
+        # assert input_shape[2] == 224
+        # assert output_shape[0] == 1000
 
         whole_net = resnet.resnet18(
             pretrained = True,
