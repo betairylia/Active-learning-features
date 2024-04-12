@@ -13,18 +13,38 @@ class InjectTest(SimpleModel):
         self.perturb_nonlinear = args.perturb_nonlinear
         self.perturb_min = args.perturb_min
         self.perturb_max = args.perturb_max
+        self.noise_pattern = args.noise_pattern
         
         self.combined_net = nn.Sequential(self.net, self.head)
         InjectNet(
             self.combined_net,
             perturb_nonlinear = self.perturb_nonlinear,
             perturb_min = self.perturb_min,
-            perturb_max = self.perturb_max
+            perturb_max = self.perturb_max,
+            noise_pattern = self.noise_pattern
         )
 
         self.combined_net_init = nn.Sequential(self.net_init, self.head_init)
 
         # breakpoint()
+
+    def get_predictions(self, x):
+
+        resample_perturb(self.combined_net)
+        enable_perturb(self.combined_net)
+        logits = []
+        probs = []
+
+        for i in range(self.args.dropout_iters):
+            logits.append(self.combined_net(x))
+            pred_prob = F.softmax(logits[-1], dim = 1)
+            probs.append(pred_prob)
+            resample_perturb(self.combined_net)
+
+        logits = torch.stack(logits, dim = 0)
+        probs = torch.stack(probs, dim = 0)
+
+        return logits, probs
 
     def forward(self, x):
 
@@ -34,22 +54,55 @@ class InjectTest(SimpleModel):
             return logits, None
         
         else:
-            resample_perturb(self.combined_net)
-            enable_perturb(self.combined_net)
-            logits = []
-            probs = []
 
-            for i in range(self.args.dropout_iters):
-                logits.append(self.combined_net(x))
-                pred_prob = F.softmax(logits[-1], dim = 1)
-                probs.append(pred_prob)
-                resample_perturb(self.combined_net)
-
-            logits = torch.stack(logits, dim = 0)
-            probs = torch.stack(probs, dim = 0)
+            logits, probs = self.get_predictions(x)
 
             model_prediction = probs.mean(0)
             entropy = -torch.sum(model_prediction * torch.log(model_prediction + 1e-8), dim = 1)
             uncertainty = entropy
 
             return logits.mean(dim = 0), uncertainty
+
+class InjectTest_Fluc(InjectTest):
+
+    def forward(self, x):
+
+        if self.training:
+            return super().forward(x)
+        
+        else:
+
+            logits, probs = self.get_predictions(x)
+
+            fluctuation_normed = logits.std(dim = 0).mean(dim = -1)
+
+            return logits.mean(dim = 0), fluctuation_normed
+
+class InjectTest_NormalizedFluc(InjectTest):
+
+    def forward(self, x):
+
+        if self.training:
+            return super().forward(x)
+        
+        else:
+
+            logits, probs = self.get_predictions(x)
+
+            # Pop state
+            cache = get_states(self.combined_net)
+
+            # Switch to indep perturbation
+            set_perturb_norm(self.combined_net, noise_norm = 0.001, noise_pattern = 'indep')
+
+            # Obtain indep result
+            logits_indep, probs_indep = self.get_predictions(x)
+
+            # Push state
+            set_states(self.combined_net, cache)
+
+            fluctuation_normed = (logits.std(dim = 0) / logits_indep.std(dim = 0)).mean(dim = -1)
+
+            return logits.mean(dim = 0), fluctuation_normed
+        
+

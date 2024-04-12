@@ -31,12 +31,15 @@ def InjectNet(
     # TODO
     # ref: https://github.com/baal-org/baal/blob/b9435080b7bdbd1c75722370ac833e97380d38c0/baal/bayesian/common.py#L52
 
+    if depth == 0:
+        layers = []
+
     if depth > 100:
         print("[INJECTOR] MAX RECURSION DEPTH")
         return False
 
     for name, child in net.named_children():
-        # print("[INJECTOR] Current layer: %s" % name)
+        print("[INJECTOR] Current layer: %s" % name)
         new_module: Optional[nn.Module] = Inject(child, *args, **kwargs)
         
         if new_module is not None:
@@ -52,6 +55,7 @@ def InjectNet(
 
     if depth == 0:
         print(net)
+        print(len(layers))
 
         for i, layer in enumerate(layers):
             layer.set_norm(
@@ -61,6 +65,26 @@ def InjectNet(
             wandb.log({"noise_norm": layer.noise_norm, "layer_index": i})
 
     return layers
+
+def get_states(module):
+    states = []
+    for each_module in module.modules():
+        if isinstance(each_module, ParameterInjector):
+            states.append(each_module.get_state())
+    return states
+
+def set_states(module, states):
+    current_index = 0
+    for each_module in module.modules():
+        if isinstance(each_module, ParameterInjector):
+            # TODO: Rename
+            each_module.set_norm(**states[current_index])
+            current_index = current_index + 1
+
+def set_perturb_norm(module, *args, **kwargs):
+    for each_module in module.modules():
+        if isinstance(each_module, ParameterInjector):
+            each_module.set_norm(*args, **kwargs)
 
 def enable_perturb(module, *args, **kwargs):
     for each_module in module.modules():
@@ -83,6 +107,9 @@ def resample_perturb(module, *args, **kwargs):
 
 class ParameterInjector(nn.Module):
 
+    def get_state(self):
+        pass
+
     def set_norm(self, noise_norm):
         pass
 
@@ -97,6 +124,10 @@ class ParameterInjector(nn.Module):
 
 class Linear_ParameterInjector(ParameterInjector):
 
+    '''
+    noise_norm: float
+    noise_pattern: str | 'prop', 'indep', 'inv'
+    '''
     def __init__(self, moduleToWrap, *args, **kwargs):
         
         super().__init__()
@@ -105,6 +136,10 @@ class Linear_ParameterInjector(ParameterInjector):
         self.noise_norm = 0.1
         if 'noise_norm' in kwargs:
             self.noise_norm = kwargs['noise_norm']
+
+        self.noise_pattern = 'prop'
+        if 'noise_pattern' in kwargs:
+            self.noise_pattern = kwargs['noise_pattern']
 
         # weight
         self.weight_inject = torch.zeros_like(self.module.weight)
@@ -117,8 +152,19 @@ class Linear_ParameterInjector(ParameterInjector):
 
         self.enabled = False
 
-    def set_norm(self, noise_norm):
-        self.noise_norm = noise_norm
+    def get_state(self):
+        return {
+            "noise_norm": self.noise_norm,
+            "noise_pattern": self.noise_pattern
+        }
+
+    def set_norm(self, noise_norm, noise_pattern = None):
+
+        if noise_norm is not None:
+            self.noise_norm = noise_norm
+
+        if noise_pattern is not None:
+            self.noise_pattern = noise_pattern
 
     def enable(self, *args, **kwargs):
         # print("Enabled Linear_PI")
@@ -135,7 +181,15 @@ class Linear_ParameterInjector(ParameterInjector):
         #     device = self.module.weight.device)
         
         self.weight_inject = torch.randn(*self.module.weight.shape, device = self.module.weight.device)
-        self.weight_inject = self.noise_norm * self.weight_inject * self.module.weight
+
+        if self.noise_pattern == 'prop':
+            self.weight_inject = self.noise_norm * self.weight_inject * self.module.weight
+
+        elif self.noise_pattern == 'indep':
+            self.weight_inject = self.noise_norm * self.weight_inject 
+
+        elif self.noise_pattern == 'inv':
+            self.weight_inject = self.noise_norm * self.weight_inject * self.module.weight
 
         # TODO: bias
 

@@ -1707,6 +1707,8 @@ models_dict =\
     "la": LaplaceRedux,
 
     "inject-test": uq.InjectTest,
+    "inject-test-fluc": uq.InjectTest_Fluc,
+    "inject-test-fluc-normed": uq.InjectTest_NormalizedFluc,
 }
 
 #################################################################
@@ -1833,6 +1835,7 @@ if __name__ == "__main__":
     parser.add_argument("--random_multidim", type=int, default=1)
     parser.add_argument("--num_multidim", type=int, default=32)
 
+    parser.add_argument("--noise_pattern", type=str, default='prop', help = "prop | indep | inv")
     parser.add_argument("--perturb_power", type=float, default=-1, help = "Overrides perturb_min / max if set to value above 0")
     parser.add_argument("--perturb_min", type=float, default=0.1, help = "Perturb noise norm for 1st layer")
     parser.add_argument("--perturb_max", type=float, default=0.1, help = "Perturb noise norm for last layer")

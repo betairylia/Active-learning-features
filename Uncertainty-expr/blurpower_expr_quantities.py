@@ -68,7 +68,7 @@ class InjectUncertainty(QuantityBase):
             resample_perturb(net)
             resample_perturb(head)
 
-            logits.append(head(net(x)))
+            logits.append(head(net(x)).detach())
             pred_prob = F.softmax(logits[-1], dim = 1)
             probs.append(pred_prob)
 
@@ -92,7 +92,31 @@ class InjectFluctuation(InjectUncertainty):
 
         logits, probs = self.get_predictions(net, head, batch)
 
-        fluctuation = logits.std(dim = 1)
+        fluctuation = logits.std(dim = 0)
+
+        return fluctuation.detach().cpu()
+
+class InjectFluctuation_normalized(InjectUncertainty):
+
+    def evlauate(self, net, head, batch):
+
+        logits, probs = self.get_predictions(net, head, batch)
+
+        # Pop state
+        cache = (get_states(net), get_states(head))
+
+        # Switch to indep perturbation
+        set_perturb_norm(net, noise_norm = 0.001, noise_pattern = 'indep')
+        set_perturb_norm(head, noise_norm = 0.001, noise_pattern = 'indep')
+
+        # Obtain indep result
+        logits_indep, probs_indep = self.get_predictions(net, head, batch)
+
+        # Push state
+        set_states(net, cache[0])
+        set_states(head, cache[1])
+
+        fluctuation_normed = logits.std(dim = 0) / logits_indep.std(dim = 0)
 
         return fluctuation.detach().cpu()
 
@@ -101,6 +125,7 @@ Qdict =\
     "trivial-uq": QuantityBase,
     "injection-uq": InjectUncertainty,
     "injection-fluc": InjectFluctuation,
+    "injection-fluc-normed": InjectFluctuation_normalized,
     "grad-param-prod": None,
     "cal-NTK-eval": None,
     "grad-norm": None,
