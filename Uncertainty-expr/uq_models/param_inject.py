@@ -126,7 +126,7 @@ class Linear_ParameterInjector(ParameterInjector):
 
     '''
     noise_norm: float
-    noise_pattern: str | 'prop', 'indep', 'inv'
+    noise_pattern: str | 'prop', 'indep', 'inv', 'subtract'
     '''
     def __init__(self, moduleToWrap, *args, **kwargs):
         
@@ -140,6 +140,10 @@ class Linear_ParameterInjector(ParameterInjector):
         self.noise_pattern = 'prop'
         if 'noise_pattern' in kwargs:
             self.noise_pattern = kwargs['noise_pattern']
+
+        self.noise_norm_ex = 0.1
+        if 'noise_norm_ex' in kwargs:
+            self.noise_norm_ex = kwargs['noise_norm_ex']
 
         # weight
         self.weight_inject = torch.zeros_like(self.module.weight)
@@ -155,16 +159,20 @@ class Linear_ParameterInjector(ParameterInjector):
     def get_state(self):
         return {
             "noise_norm": self.noise_norm,
-            "noise_pattern": self.noise_pattern
+            "noise_pattern": self.noise_pattern,
+            "noise_norm_ex": self.noise_norm_ex
         }
 
-    def set_norm(self, noise_norm, noise_pattern = None):
+    def set_norm(self, noise_norm, noise_pattern = None, noise_norm_ex = None):
 
         if noise_norm is not None:
             self.noise_norm = noise_norm
 
         if noise_pattern is not None:
             self.noise_pattern = noise_pattern
+
+        if noise_norm_ex is not None:
+            self.noise_norm_ex = noise_norm_ex
 
     def enable(self, *args, **kwargs):
         # print("Enabled Linear_PI")
@@ -190,6 +198,9 @@ class Linear_ParameterInjector(ParameterInjector):
 
         elif self.noise_pattern == 'inv':
             self.weight_inject = self.noise_norm * self.weight_inject * self.module.weight
+
+        elif self.noise_pattern == 'subtract':
+            self.weight_inject = (self.noise_norm - self.noise_norm_ex * torch.abs(self.module.weight)) * self.weight_inject
 
         # TODO: bias
 

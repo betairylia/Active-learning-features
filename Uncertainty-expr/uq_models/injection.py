@@ -104,5 +104,13 @@ class InjectTest_NormalizedFluc(InjectTest):
             fluctuation_normed = (logits.std(dim = 0) / logits_indep.std(dim = 0)).mean(dim = -1)
 
             return logits.mean(dim = 0), fluctuation_normed
+
+class InjectTest_Subtract(InjectTest):
+
+    def __init__(self, args, input_shape, output_dim = 10):
         
+        super().__init__(args, input_shape, output_dim)
+
+        # Switch to subtract perturbation
+        set_perturb_norm(self.combined_net, noise_norm = None, noise_pattern = 'subtract', noise_norm_ex = 0.1)
 
