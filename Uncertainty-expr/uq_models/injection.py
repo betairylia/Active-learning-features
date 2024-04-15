@@ -112,5 +112,5 @@ class InjectTest_Subtract(InjectTest):
         super().__init__(args, input_shape, output_dim)
 
         # Switch to subtract perturbation
-        set_perturb_norm(self.combined_net, noise_norm = None, noise_pattern = 'subtract', noise_norm_ex = 0.1)
+        set_perturb_norm(self.combined_net, noise_norm = None, noise_pattern = 'subtract', noise_norm_ex = args.perturb_ex)
 

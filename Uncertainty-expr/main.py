@@ -1840,6 +1840,7 @@ if __name__ == "__main__":
     parser.add_argument("--perturb_power", type=float, default=-1, help = "Overrides perturb_min / max if set to value above 0")
     parser.add_argument("--perturb_min", type=float, default=0.1, help = "Perturb noise norm for 1st layer")
     parser.add_argument("--perturb_max", type=float, default=0.1, help = "Perturb noise norm for last layer")
+    parser.add_argument("--perturb_ex", type=float, default=0.1, help = "Perturb noise norm for subtract multiplicative")
     parser.add_argument("--perturb_nonlinear", type=float, default=0.0, help = "Perturb noise norm curve nonlinearity; >0 => more change towards last layer | <0 => more change towards first layer")
 
     # Visualization
