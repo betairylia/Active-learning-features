@@ -200,7 +200,7 @@ class Linear_ParameterInjector(ParameterInjector):
             self.weight_inject = self.noise_norm * self.weight_inject * self.module.weight
 
         elif self.noise_pattern == 'subtract':
-            self.weight_inject = (self.noise_norm - self.noise_norm_ex * torch.abs(self.module.weight)) * self.weight_inject
+            self.weight_inject = (self.noise_norm - self.noise_norm * self.noise_norm_ex * torch.abs(self.module.weight)) * self.weight_inject
 
         # TODO: bias
 
