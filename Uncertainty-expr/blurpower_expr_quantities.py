@@ -8,6 +8,8 @@ import numpy as np
 from uq_models.param_inject import *
 from func_dropout import *
 
+from tqdm import tqdm
+
 class QuantityBase():
 
     def __init__(self, args):
@@ -40,6 +42,23 @@ class QuantityBase():
 
         return {"Q": q_eval, "Q (Normalized)": q_eval / self.q_eval_ref}
 
+def VisualizeHessianBound(gradResults):
+    
+    means = gradResults.mean()
+    varis = gradResults.variance()
+
+    print("Layer keys:")
+    print([k for k in means])
+
+    all_data = []
+    for i, k in enumerate(means):
+        data = {"Hessian-mean-mean": means[k].mean(), "Hessian-mean-norm": means[k].norm(), "Hessian-var-mean": varis[k].mean(), "Hessian-var-norm": varis[k].norm(), "param_index": i, "param_name": k}
+        all_data.append(data)
+        wandb.log(data)
+
+    table = wandb.Table(columns = list(all_data[0].keys()), data = [list(d.values()) for d in all_data])
+    wandb.log({"Hessian-bound-table": table})
+
 class HessianBoundCalculator(QuantityBase):
 
     def fnet_single_hvp(self, x, y_index = 0):
@@ -67,17 +86,18 @@ class HessianBoundCalculator(QuantityBase):
 
         self.device = torch.device('cuda')
 
-        for batch_id in range(1024):
+        for batch_id in tqdm(range(1024), desc = "Hessian bound"):
 
             # Generate data
-            x = torch.randn(128, 3, 224, 224, device = self.device)
+            # x = torch.randn(self.args.batch_size, 3, 224, 224, device = self.device)
+            x = torch.randn(1, 3, 224, 224, device = self.device)
 
             grad = torch.func.grad(self.fnet_single_hvp(x, 0))
-            hvp_result = torch.func.jvp(grad, (self.fparams,), (params_randn_like(self.fparams),))[1].t()
+            hvp_result = torch.func.jvp(grad, (self.fparams,), (params_randn_like(self.fparams),))[1]
 
             self.gradResults.record(hvp_result)
 
-        breakpoint()
+        VisualizeHessianBound(self.gradResults)
 
         return net, head
 

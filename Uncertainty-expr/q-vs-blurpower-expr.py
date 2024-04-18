@@ -10,7 +10,7 @@ import numpy as np
 from argparse import ArgumentParser
 
 from nets import net_dict
-from blurpower_expr_quantities import Qdict
+from blurpower_expr_quantities import VisualizeHessianBound, Qdict
 
 import wandb
 
@@ -99,6 +99,10 @@ def main():
         project = "q-vs-blurpower-experiment",
         config = args
     )
+
+    if args.q == "visualize-hessian":
+        VisualizeHessianBound(torch.load("hessian-bound-test.pkl"))
+        exit()
 
     Q = Qdict[args.q](args)
 
