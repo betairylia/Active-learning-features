@@ -6,6 +6,7 @@ from torch.nn import functional as F
 import numpy as np
 
 from uq_models.param_inject import *
+from func_dropout import *
 
 class QuantityBase():
 
@@ -38,6 +39,47 @@ class QuantityBase():
             self.q_eval_ref = q_eval
 
         return {"Q": q_eval, "Q (Normalized)": q_eval / self.q_eval_ref}
+
+class HessianBoundCalculator(QuantityBase):
+
+    def fnet_single_hvp(self, x, y_index = 0):
+
+        # Torch 2.0 / CUDA 11.7
+        def foo(params):
+            return torch.func.functional_call(self.combined_net, params, (x,))[0, y_index]
+        
+        return foo
+
+    def preprocess(self, net, head):
+        
+        # self.perturb_power = self.args.perturb_power 
+        
+        # InjectNet(net, noise_norm = self.perturb_power)
+        # InjectNet(head, noise_norm = self.perturb_power)
+
+        self.combined_net = nn.Sequential(net, head)
+        self.combined_net.eval()
+        self.y_index = 0
+
+        # Calculate hessian bound
+        self.fparams = dict(self.combined_net.named_parameters())
+        self.gradResults = DropoutHessianRecorder()
+
+        self.device = torch.device('cuda')
+
+        for batch_id in range(1024):
+
+            # Generate data
+            x = torch.randn(128, 3, 224, 224, device = self.device)
+
+            grad = torch.func.grad(self.fnet_single_hvp(x, 0))
+            hvp_result = torch.func.jvp(grad, (self.fparams,), (params_randn_like(self.fparams),))[1].t()
+
+            self.gradResults.record(hvp_result)
+
+        breakpoint()
+
+        return net, head
 
 class InjectUncertainty(QuantityBase):
 
@@ -129,5 +171,7 @@ Qdict =\
     "grad-param-prod": None,
     "cal-NTK-eval": None,
     "grad-norm": None,
+    
+    "hessian-bound": HessianBoundCalculator,
 }
 

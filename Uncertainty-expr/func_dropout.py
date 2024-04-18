@@ -37,6 +37,9 @@ def params_pow(params, a):
 def params_abs(params):
     return {k: torch.abs(p) for k, p in params.items()}
 
+def params_randn_like(params):
+    return {k: torch.randn_like(p) for k, p in params.items()}
+
 def params_sum(params):
 
     result = 0
