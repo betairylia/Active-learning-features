@@ -9,6 +9,7 @@ from uq_models.param_inject import *
 from func_dropout import *
 
 from tqdm import tqdm
+import math
 
 class QuantityBase():
 
@@ -42,22 +43,32 @@ class QuantityBase():
 
         return {"Q": q_eval, "Q (Normalized)": q_eval / self.q_eval_ref}
 
-def VisualizeHessianBound(gradResults):
+def VisualizeHessianBound(gradResults, prefix = "Hessian"):
     
     means = gradResults.mean()
     varis = gradResults.variance()
+    raw2ms = gradResults.get_raw_2m()
 
     print("Layer keys:")
     print([k for k in means])
 
     all_data = []
     for i, k in enumerate(means):
-        data = {"Hessian-mean-mean": means[k].mean(), "Hessian-mean-norm": means[k].norm(), "Hessian-var-mean": varis[k].mean(), "Hessian-var-norm": varis[k].norm(), "param_index": i, "param_name": k}
+        data = {
+            "%s-mean-mean" % prefix: means[k].mean(), 
+            "%s-mean-norm" % prefix: means[k].norm() / math.sqrt(torch.numel(means[k])), 
+            "%s-var-mean" % prefix: varis[k].mean(), 
+            "%s-var-norm" % prefix: varis[k].norm() / math.sqrt(torch.numel(means[k])), 
+            "%s-r2m-mean" % prefix: raw2ms[k].mean(), 
+            "%s-r2m-norm" % prefix: raw2ms[k].norm() / math.sqrt(torch.numel(means[k])), 
+            "param_index": i, 
+            "param_name": k
+        }
         all_data.append(data)
         wandb.log(data)
 
     table = wandb.Table(columns = list(all_data[0].keys()), data = [list(d.values()) for d in all_data])
-    wandb.log({"Hessian-bound-table": table})
+    wandb.log({"%s-bound-table" % prefix: table})
 
 class HessianBoundCalculator(QuantityBase):
 
@@ -70,7 +81,7 @@ class HessianBoundCalculator(QuantityBase):
         return foo
 
     def preprocess(self, net, head):
-        
+
         # self.perturb_power = self.args.perturb_power 
         
         # InjectNet(net, noise_norm = self.perturb_power)
@@ -82,7 +93,10 @@ class HessianBoundCalculator(QuantityBase):
 
         # Calculate hessian bound
         self.fparams = dict(self.combined_net.named_parameters())
+
+        self.hessianResults = DropoutHessianRecorder()
         self.gradResults = DropoutHessianRecorder()
+        self.paramResults = DropoutHessianRecorder()
 
         self.device = torch.device('cuda')
 
@@ -93,11 +107,19 @@ class HessianBoundCalculator(QuantityBase):
             x = torch.randn(1, 3, 224, 224, device = self.device)
 
             grad = torch.func.grad(self.fnet_single_hvp(x, 0))
+            grad_result = grad((self.fparams,))[0]
             hvp_result = torch.func.jvp(grad, (self.fparams,), (params_randn_like(self.fparams),))[1]
 
-            self.gradResults.record(hvp_result)
+            self.gradResults.record(grad_result)
+            self.hessianResults.record(hvp_result)
 
-        VisualizeHessianBound(self.gradResults)
+        # Placeholder workaround to calculate paramater statstics
+        self.paramResults.record(self.fparams)
+        self.paramResults.record(self.fparams)
+
+        VisualizeHessianBound(self.paramResults, "Parameters")
+        VisualizeHessianBound(self.gradResults, "Gradient")
+        VisualizeHessianBound(self.hessianResults, "Hessian")
 
         return net, head
 

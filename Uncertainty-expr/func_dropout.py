@@ -40,6 +40,9 @@ def params_abs(params):
 def params_randn_like(params):
     return {k: torch.randn_like(p) for k, p in params.items()}
 
+def params_detach(params):
+    return {k: p.detach() for k, p in params.items()}
+
 def params_sum(params):
 
     result = 0
@@ -125,13 +128,19 @@ class DropoutHessianRecorder():
         self.raw_2m = None
         self.count = 0
 
-    def record(self, result):
+    def record(self, result_input):
         
+        result = params_detach(result_input)
+
         if self.E is None:
             self.E = result
-        
+        else:
+            self.E = params_add(self.E, result)
+
         if self.raw_2m is None:
             self.raw_2m = params_pow(result, 2.0)
+        else:
+            self.raw_2m = params_add(self.raw_2m, params_pow(result, 2.0))
 
         self.count += 1
 
@@ -143,6 +152,9 @@ class DropoutHessianRecorder():
         return params_substract(
             params_scale(self.raw_2m, 1.0 / self.count),
             params_pow(self.mean(), 2.0))
+
+    def get_raw_2m(self):
+        return params_scale(self.raw_2m, 1.0 / self.count)
 
 def softmax_gradient_at_idx(logits, idx):
     scaled_logits = logits - logits.max()

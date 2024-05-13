@@ -1876,6 +1876,10 @@ if __name__ == "__main__":
     if args.dataAug == 0:
         args.augTrials = 1
 
+    if args.perturb_power > 0:
+        args.perturb_min = args.perturb_power
+        args.perturb_max = args.perturb_power
+
     # if args.no_train:
         # args.batch_size = 1
 

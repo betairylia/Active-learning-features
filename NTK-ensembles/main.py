@@ -271,7 +271,7 @@ def obtain_NTK_data(main_datamodule):
     val_set = main_datamodule.val_dataloader().dataset
 
     rng = np.random.default_rng(42)
-    indices_train = rng.choice(len(train_set), size = 100, replace = False)
+    indices_train = rng.choice(len(train_set), size = 256, replace = False)
     indices_val = rng.choice(len(val_set), size = 100, replace = False)
     train_NTK_data = torch.stack([train_set[i][0] for i in indices_train])
     val_NTK_data = torch.stack([val_set[i][0] for i in indices_val])
@@ -355,6 +355,7 @@ models_dict =\
 #################################################################
 
 import types
+from NTK_modelParam_expr_visualization import visualize
 
 def main(hparams):
     
@@ -366,11 +367,20 @@ def main(hparams):
     NTK_data = [train_NTK_data, val_NTK_data]
 
     def on_validation_epoch_end(self):
-        self.evaluated_NTKs.append(eval_NTK(
+
+        NTK_eval = eval_NTK(
             nn.Sequential(self.net, self.head),
             NTK_data[0], NTK_data[1]
-        ))
+        )
+
+        self.evaluated_NTKs.append(NTK_eval)
         # self.evaluated_NTKs.append(torch.normal(0, 1, size = (100, 100)))
+
+        visualize(
+            nn.Sequential(self.net, self.head),
+            NTK_data[1],
+            NTK_eval
+        )
 
     all_model_NTKs = []
     model_list = [hparams.model, hparams.modelB]
