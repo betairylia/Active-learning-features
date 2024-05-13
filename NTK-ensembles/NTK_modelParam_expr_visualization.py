@@ -1,4 +1,5 @@
 
+from param_inject import *
 
 '''
 net: a torch.Model that can forward test_set
@@ -12,6 +13,18 @@ behavior: will upload the following datatable to wandb run:
 def visualize(net, test_set, raw_NTK_eval):
 
     # Create noise-injected model
+    injected_net = Inject(net, noise_pattern = 'prop')
+
     # Collect output variance -> <grad, param>
+    resample_perturb(injected_net)
+    enable_perturb(injected_net)
+    outputs = []
+
+    for i in range(self.args.dropout_iters):
+        outputs.append(injected_net(x))
+        resample_perturb(injected_net)
+
+    outputs = torch.stack(outputs, dim = 0)
+    
     # Output to datatables
 
