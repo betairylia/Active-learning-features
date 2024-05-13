@@ -136,7 +136,7 @@ class SimpleModel(LightningModule):
         # resnet.maxpool = nn.Identity()
         # self.l1 = resnet
         
-        self.accuracy = Accuracy()
+        self.accuracy = Accuracy('multiclass', num_classes = 10)
         
     def initNets(self, net):
 
@@ -321,8 +321,11 @@ def eval_NTK(net, data_A, data_B):
     NTK_batchsize = 16
     result = torch.zeros((data_A.shape[0], data_B.shape[0]))
 
-    for NTK_i in range(NTK_batchsize):
-        for NTK_j in range(NTK_batchsize):
+    A_batches = len(data_A) // NTK_batchsize
+    B_batches = len(data_B) // NTK_batchsize
+
+    for NTK_i in range(A_batches):
+        for NTK_j in range(B_batches):
 
             si = NTK_i * NTK_batchsize
             sj = NTK_j * NTK_batchsize
@@ -400,6 +403,9 @@ def main(hparams):
 
     for i, chosen_model in enumerate(model_list):
 
+        if chosen_model == 'none':
+            continue
+
         # Hack
         wandb_logger._prefix = "model%d" % (i+1)
 
@@ -428,10 +434,10 @@ def main(hparams):
         all_model_NTKs.append(model.evaluated_NTKs)
 
     # Compute the difference between NTKs for all epoch and log them
-    for epoch in range(hparams.epochs):
-        wandb_logger._prefix = ""
-        diff = (all_model_NTKs[0][epoch] - all_model_NTKs[1][epoch]).abs().mean()
-        wandb_logger.log_metrics({"NTK_diff": diff}, step = epoch)
+    # for epoch in range(hparams.epochs):
+    #     wandb_logger._prefix = ""
+    #     diff = (all_model_NTKs[0][epoch] - all_model_NTKs[1][epoch]).abs().mean()
+    #     wandb_logger.log_metrics({"NTK_diff": diff}, step = epoch)
 
 if __name__ == "__main__":
     
@@ -449,7 +455,7 @@ if __name__ == "__main__":
     parser.add_argument("--epochs_per_query", type=int, default=25)
     parser.add_argument("--inference_iteration", type=int, default=20)
     parser.add_argument("--model", type=str, default='default')
-    parser.add_argument("--modelB", type=str, default='default')
+    parser.add_argument("--modelB", type=str, default='none')
     parser.add_argument("--dataset", type=str, default='mnist')
     
     # Model
