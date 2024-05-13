@@ -13,18 +13,12 @@ import torchvision.transforms as transforms
 
 from functools import partial
 
-from pl_bolts.datamodules import MNISTDataModule, CIFAR10DataModule, FashionMNISTDataModule
-from datamodules import SVHNDataModule
-
 import pytorch_lightning as pl
 
 from argparse import ArgumentParser
 from utils import *
 
 from pytorch_lightning.loggers import WandbLogger
-
-from data_uncertainty import MNIST_UncertaintyDM, CIFAR10_UncertaintyDM, SVHN_UncertaintyDM, ImageNet_Validation_UncertaintyDM #, FashionMNIST_UncertaintyDM
-from recorder import Recorder
 
 from nets import net_dict
 
