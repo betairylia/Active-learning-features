@@ -26,6 +26,7 @@ from pytorch_lightning.loggers import WandbLogger
 from functorch import make_functional, vmap, vjp, jvp, jacrev
 
 import math
+import copy
 # from resnet import resnet18
 # from weight_drop import *
 
@@ -367,6 +368,10 @@ def main(hparams):
     
     main_datamodule, input_dim = get_data_module(hparams.dataset, hparams.batch_size, data_augmentation = (hparams.dataAug > 0))
     train_NTK_data, val_NTK_data = obtain_NTK_data(main_datamodule)
+
+    if hparams.gaussian_test:
+        val_NTK_data = torch.randn_like(val_NTK_data)
+
     NTK_data = [train_NTK_data, val_NTK_data]
 
     def on_validation_epoch_end(self):
@@ -376,14 +381,24 @@ def main(hparams):
             NTK_data[0], NTK_data[1]
         )
 
+        NTK_val_val = eval_NTK(
+            nn.Sequential(self.net, self.head),
+            NTK_data[1], NTK_data[1]
+        )
+
         self.evaluated_NTKs.append(NTK_eval)
         # self.evaluated_NTKs.append(torch.normal(0, 1, size = (100, 100)))
 
+        copied_model = copy.deepcopy(nn.Sequential(self.net, self.head))
+
         visualize(
-            nn.Sequential(self.net, self.head),
+            copied_model,
             NTK_data[1],
-            NTK_eval
+            NTK_eval,
+            NTK_val_val
         )
+
+        copied_model = None
 
     all_model_NTKs = []
     model_list = [hparams.model, hparams.modelB]
@@ -413,11 +428,14 @@ def main(hparams):
         model = models_dict[chosen_model](hparams, input_dim)
         model.on_validation_epoch_end = types.MethodType(on_validation_epoch_end, model)
 
+        # Initial visualization
+        # model.on_validation_epoch_end()
+
         # Initialize a trainer
         trainer = Trainer(
             gpus=1,
             max_epochs=hparams.epochs,
-            progress_bar_refresh_rate=20,
+            # progress_bar_refresh_rate=20,
             enable_checkpointing=False,
 
             # limit_val_batches = 0.0,
@@ -464,6 +482,7 @@ if __name__ == "__main__":
     parser.add_argument("--ensemble_expansion", type=int, default=1)
     parser.add_argument("--ensemble_reduce", type=str, default=torch.sum)
     parser.add_argument("--initialization_scale", type=float, default=1.0)
+    parser.add_argument("--gaussian_test", type=int, default=0)
 
     # Training
     parser.add_argument('--dataAug', type=int, default=0, help="Data augmentation on(1) / off(0).")
