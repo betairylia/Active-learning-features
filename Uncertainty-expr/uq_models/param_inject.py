@@ -141,7 +141,7 @@ class Linear_ParameterInjector(ParameterInjector):
         if 'noise_pattern' in kwargs:
             self.noise_pattern = kwargs['noise_pattern']
 
-        self.noise_norm_ex = 0.1
+        self.noise_norm_ex = 1.5 
         if 'noise_norm_ex' in kwargs:
             self.noise_norm_ex = kwargs['noise_norm_ex']
 
@@ -201,6 +201,9 @@ class Linear_ParameterInjector(ParameterInjector):
 
         elif self.noise_pattern == 'subtract':
             self.weight_inject = (self.noise_norm - self.noise_norm * self.noise_norm_ex * torch.abs(self.module.weight)) * self.weight_inject
+
+        elif self.noise_pattern == 'prop-deterministic':
+            self.weight_inject = self.noise_norm * self.module.weight 
 
         # TODO: bias
 

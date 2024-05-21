@@ -61,6 +61,7 @@ def get_data_module(dataset_name, batch_size, data_augmentation=True):
             data_dir = "./data",
             num_workers = 16,
             batch_size = batch_size,
+            normalize = True
         )
     
     elif dataset_name == 'cifar10':
@@ -210,7 +211,8 @@ class SimpleModel(LightningModule):
         return self.validation_step(batch, batch_idx)
         
     def configure_optimizers(self):
-        return torch.optim.AdamW(self.parameters())
+        # return torch.optim.AdamW(self.parameters(), lr = self.args.lr)
+        return torch.optim.SGD(self.parameters(), lr = self.args.lr, momentum = 0.9)
 #         return torch.optim.AdamW(self.parameters(), lr = 3e-4, weight_decay = 1e-5)
 
 # Create a model which is an ensemble of smaller networks (summate their outputs)
@@ -265,22 +267,22 @@ class EnsembleModel(SimpleModel):
         self.log("ensemble_stddev", ensemble_std)
         return self.head.reduce(individuals, dim = 0)
 
-def obtain_NTK_data(main_datamodule):
+def obtain_NTK_data(main_datamodule, n_train = 256, n_val = 100):
 
     main_datamodule.setup()
     train_set = main_datamodule.train_dataloader().dataset
     val_set = main_datamodule.val_dataloader().dataset
 
     rng = np.random.default_rng(42)
-    indices_train = rng.choice(len(train_set), size = 256, replace = False)
-    indices_val = rng.choice(len(val_set), size = 100, replace = False)
+    indices_train = rng.choice(len(train_set), size = n_train, replace = False)
+    indices_val = rng.choice(len(val_set), size = n_val, replace = False)
     train_NTK_data = torch.stack([train_set[i][0] for i in indices_train])
     val_NTK_data = torch.stack([val_set[i][0] for i in indices_val])
 
     return train_NTK_data, val_NTK_data
 
 # https://pytorch.org/functorch/stable/notebooks/neural_tangent_kernels.html
-def eval_NTK(net, data_A, data_B):
+def eval_NTK(net, data_A, data_B, outdim = -1):
 
     # prev_device = next(iter(net.parameters())).device
     # net = net.to(data_A.device)
@@ -292,8 +294,15 @@ def eval_NTK(net, data_A, data_B):
     data_A_dev = data_A.to(device)
     data_B_dev = data_B.to(device)
 
-    def fnet_single(params, x):
-        return fnet(params, x.unsqueeze(0)).squeeze(0)
+    def get_fnet_single(outdim = -1):
+
+        def fnet_single(params, x):
+            if outdim < 0:
+                return fnet(params, x.unsqueeze(0)).squeeze(0)
+            else:
+                return fnet(params, x.unsqueeze(0)).squeeze(0)[outdim:outdim+1]
+
+        return fnet_single
     
     def empirical_ntk_jacobian_contraction(fnet_single, params, x1, x2, compute='full'):
         # Compute J(x1)
@@ -325,6 +334,8 @@ def eval_NTK(net, data_A, data_B):
     A_batches = len(data_A) // NTK_batchsize
     B_batches = len(data_B) // NTK_batchsize
 
+    net_func = get_fnet_single(outdim)
+
     for NTK_i in range(A_batches):
         for NTK_j in range(B_batches):
 
@@ -334,7 +345,7 @@ def eval_NTK(net, data_A, data_B):
             ej = sj + NTK_batchsize
             
             result[si:ei, sj:ej] = empirical_ntk_jacobian_contraction(
-                fnet_single,
+                net_func,
                 params,
                 data_A_dev[si:ei],
                 data_B_dev[sj:ej],
@@ -367,23 +378,24 @@ def main(hparams):
     pl.seed_everything(seed)
     
     main_datamodule, input_dim = get_data_module(hparams.dataset, hparams.batch_size, data_augmentation = (hparams.dataAug > 0))
-    train_NTK_data, val_NTK_data = obtain_NTK_data(main_datamodule)
+    train_NTK_data, val_NTK_data = obtain_NTK_data(main_datamodule, hparams.train_NTK_points, hparams.val_NTK_points)
 
     if hparams.gaussian_test:
         val_NTK_data = torch.randn_like(val_NTK_data)
 
     NTK_data = [train_NTK_data, val_NTK_data]
+    outdim = hparams.NTK_outdim
 
     def on_validation_epoch_end(self):
 
         NTK_eval = eval_NTK(
             nn.Sequential(self.net, self.head),
-            NTK_data[0], NTK_data[1]
+            NTK_data[0], NTK_data[1], outdim
         )
 
         NTK_val_val = eval_NTK(
             nn.Sequential(self.net, self.head),
-            NTK_data[1], NTK_data[1]
+            NTK_data[1], NTK_data[1], outdim
         )
 
         self.evaluated_NTKs.append(NTK_eval)
@@ -395,7 +407,8 @@ def main(hparams):
             copied_model,
             NTK_data[1],
             NTK_eval,
-            NTK_val_val
+            NTK_val_val,
+            outdim = outdim
         )
 
         copied_model = None
@@ -475,6 +488,9 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=str, default='default')
     parser.add_argument("--modelB", type=str, default='none')
     parser.add_argument("--dataset", type=str, default='mnist')
+
+    parser.add_argument("--train_NTK_points", type=int, default=2048)
+    parser.add_argument("--val_NTK_points", type=int, default=100)
     
     # Model
     parser.add_argument("--hidden_dim", type=int, default=2048)
@@ -482,7 +498,9 @@ if __name__ == "__main__":
     parser.add_argument("--ensemble_expansion", type=int, default=1)
     parser.add_argument("--ensemble_reduce", type=str, default=torch.sum)
     parser.add_argument("--initialization_scale", type=float, default=1.0)
+    parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument("--gaussian_test", type=int, default=0)
+    parser.add_argument("--NTK_outdim", type=int, default=-1, help="-1 to use all output dimensions (and compute a trace)")
 
     # Training
     parser.add_argument('--dataAug', type=int, default=0, help="Data augmentation on(1) / off(0).")
