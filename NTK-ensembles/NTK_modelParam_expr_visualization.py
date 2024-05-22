@@ -45,7 +45,6 @@ def get_outputs_std(net, dataset, outdim = -1, num_iters = 30, device = torch.de
     raw_outputs = torch.cat(raw_outputs, dim=1).detach().cpu()
 
     return outputs, raw_outputs
-
 '''
 net: a torch.Model that can forward test_set
 test_set: enumerable containing test data
@@ -55,7 +54,10 @@ output: None
 behavior: will upload the following datatable to wandb run:
     - E[NTK(X,z)]; E[|NTK(X,z)|]; Maximum[NTK(X,z)]; <d_\theta f(z), \theta_T>
 '''
-def visualize(net, test_set, raw_NTK_eval, raw_NTK_eval_val_val, outdim = -1):
+def visualize(net, test_set, raw_NTK_eval, raw_NTK_eval_val_val, grad_param_dot = None, grad_paramDiff_dot = None, outdim = -1):
+
+    _, outputs_original = get_outputs_std(net, test_set, outdim = outdim, num_iters = 2)
+    outputs_original = outputs_original[0, :, :]
 
     # Create noise-injected model <df(z), param>
     InjectNet(net, noise_pattern = 'prop')
@@ -73,10 +75,10 @@ def visualize(net, test_set, raw_NTK_eval, raw_NTK_eval_val_val, outdim = -1):
     outputs_subtract, _ = get_outputs_std(net, test_set, outdim = outdim)
 
     # Deterministic injection result
-    set_perturb_norm(net, noise_norm = 0.000001, noise_pattern = 'prop-deterministic')
+    set_perturb_norm(net, noise_norm = 0.00001, noise_pattern = 'prop-deterministic')
     _, outputs_det = get_outputs_std(net, test_set, outdim = outdim, num_iters = 2)
     print(outputs_det.shape)
-    outputs_det = outputs_det[0, :, :].sum(-1)
+    outputs_det = (outputs_det[0, :, :] - outputs_original).sum(-1)
     print(outputs_det.shape)
 
     # Output to datatables
@@ -99,21 +101,43 @@ def visualize(net, test_set, raw_NTK_eval, raw_NTK_eval_val_val, outdim = -1):
             "df(z) norm": outputs_indep[i],
             "subtract": outputs_subtract[i],
         }
+
+        if grad_param_dot is not None:
+            data["<df(z), param>-exact"] = grad_param_dot[i]
+            data["<df(z), paramDiff>-exact"] = grad_paramDiff_dot[i]
+
         all_data.append(data)
         wandb.log(data)
 
+    # breakpoint()
     table = wandb.Table(columns = list(all_data[0].keys()), data = [list(d.values()) for d in all_data])
     wandb.log({"NTK-experiment table": table})
     
     fig, ax = plt.subplots()
-    sns.scatterplot(data = table.get_dataframe(), x = "<df(z)^2, param^2>", y = "E[O(X,z)]", ax = ax)
-    wandb.log({"NTK-expr plot E_O": wandb.Image(fig)})
+    sns.scatterplot(data = table.get_dataframe(), x = "<df(z)^2, param^2>", y = "E[O(X,z)]", ax = ax).invert_yaxis()
+    wandb.log({"NTK-expr plot prop || E_O": wandb.Image(fig)})
     plt.close('all')
 
     fig, ax = plt.subplots()
-    sns.scatterplot(data = table.get_dataframe(), x = "<df(z), param>-det", y = "E[O(X,z)]", ax = ax)
+    sns.scatterplot(data = table.get_dataframe(), x = "<df(z), param>-det", y = "E[O(X,z)]", ax = ax).invert_yaxis()
     wandb.log({"NTK-expr plot det || E_O": wandb.Image(fig)})
     plt.close('all')
+
+    if grad_param_dot is not None:
+        fig, ax = plt.subplots()
+        sns.scatterplot(data = table.get_dataframe(), x = "<df(z), param>-det", y = "<df(z), param>-exact", ax = ax).invert_yaxis()
+        wandb.log({"<grad, param>: det || exact": wandb.Image(fig)})
+        plt.close('all')
+
+        fig, ax = plt.subplots()
+        sns.scatterplot(data = table.get_dataframe(), x = "<df(z)^2, param^2>", y = "<df(z), param>-exact", ax = ax).invert_yaxis()
+        wandb.log({"<grad, param>: prop || exact": wandb.Image(fig)})
+        plt.close('all')
+
+        fig, ax = plt.subplots()
+        sns.scatterplot(data = table.get_dataframe(), x = "<df(z), param>-exact", y = "<df(z), paramDiff>-exact", ax = ax).invert_yaxis()
+        wandb.log({"<grad, param>: exact || diff-exact": wandb.Image(fig)})
+        plt.close('all')
 
     R_E_O = scipy.stats.pearsonr(outputs, E_O[:outputs.shape[0]]).statistic
     R_zz_sub_E_O = scipy.stats.pearsonr(outputs, O_zz[:outputs.shape[0]] - E_O[:outputs.shape[0]]).statistic
@@ -129,7 +153,7 @@ def visualize(net, test_set, raw_NTK_eval, raw_NTK_eval_val_val, outdim = -1):
         R_ub_zz = scipy.stats.pearsonr(O_zz[:outputs.shape[0]], value).statistic
         R_ub_indep_det = scipy.stats.pearsonr(outputs_indep - outputs_det, value).statistic
 
-        return {
+        o = {
             "PearsonR prop || %s" % name: R_ub,
             "PearsonR indep || %s" % name: R_ub_indep,
             "PearsonR indep-prop || %s" % name: R_ub_final,
@@ -139,8 +163,16 @@ def visualize(net, test_set, raw_NTK_eval, raw_NTK_eval_val_val, outdim = -1):
             "PearsonR zz || %s" % name: R_ub_zz,
         }
 
+        if grad_param_dot is not None:
+            o["PearsonR <g,p>Exct || %s" % name] = scipy.stats.pearsonr(grad_param_dot[:outputs.shape[0]], value).statistic
+            o["PearsonR <g,dp>Exct || %s" % name] = scipy.stats.pearsonr((grad_param_dot - grad_paramDiff_dot)[:outputs.shape[0]], value).statistic
+
+        return o
+
     R_ubs = compare_PearsonR(O_zz[:outputs.shape[0]] - E_max[:outputs.shape[0]], "UB")
-    R_EO = compare_PearsonR(E_O[:outputs.shape[0]], "E[O(X,z)]")
+    R_EOs = compare_PearsonR(E_O[:outputs.shape[0]], "E[O(X,z)]")
+    R_MOs = compare_PearsonR(E_max[:outputs.shape[0]], "Max[O(X,z)]")
+    # TODO: Max[O(x, x) - 2*O(x, z)]
 
     wandb.log({
         "PearsonR O(z,z) - E[O(X,z)] || <,>": R_E_O,
@@ -148,6 +180,7 @@ def visualize(net, test_set, raw_NTK_eval, raw_NTK_eval_val_val, outdim = -1):
         "PearsonR E[] || |E[]|": R_E_E_abs,
 
         **R_ubs,
-        **R_EO,
+        **R_EOs,
+        **R_MOs,
     })
 

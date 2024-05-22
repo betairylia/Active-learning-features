@@ -282,7 +282,7 @@ def obtain_NTK_data(main_datamodule, n_train = 256, n_val = 100):
     return train_NTK_data, val_NTK_data
 
 # https://pytorch.org/functorch/stable/notebooks/neural_tangent_kernels.html
-def eval_NTK(net, data_A, data_B, outdim = -1):
+def eval_NTK(net, data_A, data_B, init_params, outdim = -1):
 
     # prev_device = next(iter(net.parameters())).device
     # net = net.to(data_A.device)
@@ -304,7 +304,7 @@ def eval_NTK(net, data_A, data_B, outdim = -1):
 
         return fnet_single
     
-    def empirical_ntk_jacobian_contraction(fnet_single, params, x1, x2, compute='full'):
+    def empirical_ntk_jacobian_contraction(fnet_single, params, init_params, x1, x2, compute='full'):
         # Compute J(x1)
         jac1 = vmap(jacrev(fnet_single), (None, 0))(params, x1)
         jac1 = [j.flatten(2) for j in jac1]
@@ -326,10 +326,21 @@ def eval_NTK(net, data_A, data_B, outdim = -1):
             
         result = torch.stack([torch.einsum(einsum_expr, j1, j2) for j1, j2 in zip(jac1, jac2)])
         result = result.sum(0)
-        return result
+
+        param_dot_result = torch.stack([torch.einsum('Naf,f->N', j2, p.flatten()) for j2, p in zip(jac2, params)])
+        param_dot_result = param_dot_result.sum(0)
+
+        param_diff_dot_result = torch.zeros_like(param_dot_result)
+        if init_params is not None:
+            param_diff_dot_result = torch.stack([torch.einsum('Naf,f->N', j2, p.flatten() - ip.flatten()) for j2, p, ip in zip(jac2, params, init_params)])
+            param_diff_dot_result = param_diff_dot_result.sum(0)
+
+        return result, param_dot_result, param_diff_dot_result
     
     NTK_batchsize = 16
     result = torch.zeros((data_A.shape[0], data_B.shape[0]))
+    param_dot_result = torch.zeros((data_B.shape[0]))
+    param_diff_dot_result = torch.zeros((data_B.shape[0]))
 
     A_batches = len(data_A) // NTK_batchsize
     B_batches = len(data_B) // NTK_batchsize
@@ -344,9 +355,10 @@ def eval_NTK(net, data_A, data_B, outdim = -1):
             ei = si + NTK_batchsize
             ej = sj + NTK_batchsize
             
-            result[si:ei, sj:ej] = empirical_ntk_jacobian_contraction(
+            result[si:ei, sj:ej], param_dot_result[sj:ej], param_diff_dot_result[sj:ej] = empirical_ntk_jacobian_contraction(
                 net_func,
                 params,
+                init_params,
                 data_A_dev[si:ei],
                 data_B_dev[sj:ej],
                 'trace'
@@ -357,7 +369,7 @@ def eval_NTK(net, data_A, data_B, outdim = -1):
     # Return net to previous device
     # net = net.to(prev_device)
 
-    return result
+    return result, param_dot_result, param_diff_dot_result, params
 
 
 
@@ -388,14 +400,17 @@ def main(hparams):
 
     def on_validation_epoch_end(self):
 
-        NTK_eval = eval_NTK(
+        NTK_eval, g_p_dot, g_pDiff_dot, params = eval_NTK(
             nn.Sequential(self.net, self.head),
-            NTK_data[0], NTK_data[1], outdim
+            NTK_data[0], NTK_data[1], self.initial_params, outdim
         )
 
-        NTK_val_val = eval_NTK(
+        if self.initial_params is None:
+            self.initial_params = copy.deepcopy(params)
+
+        NTK_val_val, _, _, _ = eval_NTK(
             nn.Sequential(self.net, self.head),
-            NTK_data[1], NTK_data[1], outdim
+            NTK_data[1], NTK_data[1], self.initial_params, outdim
         )
 
         self.evaluated_NTKs.append(NTK_eval)
@@ -408,6 +423,8 @@ def main(hparams):
             NTK_data[1],
             NTK_eval,
             NTK_val_val,
+            g_p_dot,
+            g_pDiff_dot,
             outdim = outdim
         )
 
@@ -439,6 +456,7 @@ def main(hparams):
 
         # Init our model
         model = models_dict[chosen_model](hparams, input_dim)
+        model.initial_params = None
         model.on_validation_epoch_end = types.MethodType(on_validation_epoch_end, model)
 
         # Initial visualization
