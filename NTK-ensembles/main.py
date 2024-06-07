@@ -14,7 +14,7 @@ import torchvision.transforms as transforms
 from functools import partial
 
 from pl_bolts.datamodules import MNISTDataModule, CIFAR10DataModule, FashionMNISTDataModule
-from datamodules import SVHNDataModule
+from datamodules import SVHNDataModule, RegressionToyDatasetDataModule
 
 import pytorch_lightning as pl
 
@@ -49,6 +49,7 @@ input_size_dict = {
     'lsun': [3, 256, 256],
     'celeba': [3, 64, 64],
     'cub200': [3, 224, 224],
+    'toy-regression': [1, 1, 1]
 }
 
 def get_data_module(dataset_name, batch_size, data_augmentation=True):    
@@ -56,6 +57,7 @@ def get_data_module(dataset_name, batch_size, data_augmentation=True):
 #     main_dm = CIFAR10DataModule(
 #     main_dm = FashionMNISTDataModule(
 
+    outdim = 10
     if dataset_name == 'mnist':
         main_dm = MNISTDataModule(
             data_dir = "./data",
@@ -70,6 +72,10 @@ def get_data_module(dataset_name, batch_size, data_augmentation=True):
             num_workers = 16,
             batch_size = batch_size,
         )
+
+    elif dataset_name == 'toy-regression':
+        main_dm = RegressionToyDatasetDataModule()
+        outdim = 1
     
     # CIFAR-10 / 32x32x3 images
     if data_augmentation == True:
@@ -104,7 +110,7 @@ def get_data_module(dataset_name, batch_size, data_augmentation=True):
             )
         ])
     
-    return main_dm, input_size_dict[dataset_name]
+    return main_dm, input_size_dict[dataset_name], outdim
 
 #################################################################
 
@@ -113,17 +119,20 @@ class MSELoss(nn.Module):
         super().__init__()
         
     def forward(self, x, y):
-        return F.mse_loss(x, F.one_hot(y, 10).detach().float())
+        if y.dtype == torch.long:
+            return F.mse_loss(x, F.one_hot(y, 10).detach().float())
+        else:
+            return F.mse_loss(x, y.unsqueeze(-1).detach().float())
 
 class SimpleModel(LightningModule):
-    def __init__(self, args, input_shape):
+    def __init__(self, args, input_shape, output_dim):
         super().__init__()
 
         self.args = args
         
         # Construct networks
         self.hidden_dim = 2048
-        self.net, self.head = self.getNets(input_shape)
+        self.net, self.head = self.getNets(input_shape, output_dim)
 
         self.evaluated_NTKs = []
         
@@ -138,7 +147,7 @@ class SimpleModel(LightningModule):
         # resnet.maxpool = nn.Identity()
         # self.l1 = resnet
         
-        self.accuracy = Accuracy('multiclass', num_classes = 10)
+        self.accuracy = Accuracy('multiclass', num_classes = output_dim) if output_dim > 1 else None
         
     def initNets(self, net):
 
@@ -151,7 +160,7 @@ class SimpleModel(LightningModule):
 
         net.apply(weights_init_wrapper(scale = self.args.initialization_scale))
 
-    def getNets(self, input_shape):
+    def getNets(self, input_shape, output_dim):
         
         # Compute the input size from input_shape
         flatten_size = 1
@@ -161,7 +170,8 @@ class SimpleModel(LightningModule):
         def getblock(d_in, d_out):
             return [
                 torch.nn.Linear(d_in, d_out),
-                torch.nn.ReLU(),
+                # torch.nn.ReLU(),
+                torch.nn.Tanh(),
                 # torch.nn.Dropout(),
             ]
 
@@ -169,11 +179,12 @@ class SimpleModel(LightningModule):
             torch.nn.Flatten(),
             *getblock(flatten_size, self.hidden_dim),
             *getblock(self.hidden_dim, self.hidden_dim),
-            *getblock(self.hidden_dim, self.hidden_dim),
+            # *getblock(self.hidden_dim, self.hidden_dim),
+            # *getblock(self.hidden_dim, self.hidden_dim),
         )
         
         head = torch.nn.Sequential(
-            torch.nn.Linear(self.hidden_dim, 10)
+            torch.nn.Linear(self.hidden_dim, output_dim)
         )
 
         self.initNets(net)
@@ -199,11 +210,14 @@ class SimpleModel(LightningModule):
         # loss = F.cross_entropy(logits, y)
         loss = self.loss(self(x), y)
         preds = torch.argmax(logits, dim=1)
-        self.accuracy(preds, y)
 
         # Calling self.log will surface up scalars for you in TensorBoard
         self.log("val_loss", loss, prog_bar=False)
-        self.log("val_acc", self.accuracy, prog_bar=False)
+
+        if self.accuracy is not None:
+            self.accuracy(preds, y)
+            self.log("val_acc", self.accuracy, prog_bar=False)
+
         return loss
 
     def test_step(self, batch, batch_idx):
@@ -211,8 +225,8 @@ class SimpleModel(LightningModule):
         return self.validation_step(batch, batch_idx)
         
     def configure_optimizers(self):
-        # return torch.optim.AdamW(self.parameters(), lr = self.args.lr)
-        return torch.optim.SGD(self.parameters(), lr = self.args.lr, momentum = 0.9)
+        return torch.optim.AdamW(self.parameters(), lr = self.args.lr)
+        # return torch.optim.SGD(self.parameters(), lr = self.args.lr, momentum = 0.9)
 #         return torch.optim.AdamW(self.parameters(), lr = 3e-4, weight_decay = 1e-5)
 
 # Create a model which is an ensemble of smaller networks (summate their outputs)
@@ -248,15 +262,15 @@ class EnsembleNets(nn.Module):
 # TODO: Initialization scaling
 class EnsembleModel(SimpleModel):
 
-    def __init__(self, args, input_shape):
-        super().__init__(args, input_shape)
+    def __init__(self, args, input_shape, output_dim):
+        super().__init__(args, input_shape, output_dim)
 
         self.hidden_dim = self.hidden_dim // self.args.ensemble_size * self.args.ensemble_expansion
-        self.net, self.head = self.getNets_ensemble(input_shape)
+        self.net, self.head = self.getNets_ensemble(input_shape, output_dim)
         print(self)
 
-    def getNets_ensemble(self, input_shape):
-        nets_and_heads = [self.getNets(input_shape) for _ in range(self.args.ensemble_size)]
+    def getNets_ensemble(self, input_shape, output_dim):
+        nets_and_heads = [self.getNets(input_shape, output_dim) for _ in range(self.args.ensemble_size)]
         net = EnsembleNets([net for net, _ in nets_and_heads], sums = False, reduce_method = self.args.ensemble_reduce)
         head = EnsembleNets([head for _, head in nets_and_heads], sums = True, split_input = True, reduce_method = self.args.ensemble_reduce)
         return net, head
@@ -275,14 +289,21 @@ def obtain_NTK_data(main_datamodule, n_train = 256, n_val = 100):
 
     rng = np.random.default_rng(42)
     indices_train = rng.choice(len(train_set), size = n_train, replace = False)
+    indices_train.sort()
     indices_val = rng.choice(len(val_set), size = n_val, replace = False)
+    indices_val.sort()
+    print(indices_val)
+
     train_NTK_data = torch.stack([train_set[i][0] for i in indices_train])
     val_NTK_data = torch.stack([val_set[i][0] for i in indices_val])
 
-    return train_NTK_data, val_NTK_data
+    train_NTK_y = torch.stack([train_set[i][1] for i in indices_train])
+    val_NTK_y = torch.stack([val_set[i][1] for i in indices_val])
+
+    return train_NTK_data, val_NTK_data, train_NTK_y, val_NTK_y
 
 # https://pytorch.org/functorch/stable/notebooks/neural_tangent_kernels.html
-def eval_NTK(net, data_A, data_B, init_params, outdim = -1):
+def eval_NTK(net, data_A, data_B, init_params, outdim = -1, diag = False):
 
     # prev_device = next(iter(net.parameters())).device
     # net = net.to(data_A.device)
@@ -324,8 +345,14 @@ def eval_NTK(net, data_A, data_B, init_params, outdim = -1):
         else:
             assert False
             
+        # df(z)^T df(x)
         result = torch.stack([torch.einsum(einsum_expr, j1, j2) for j1, j2 in zip(jac1, jac2)])
         result = result.sum(0)
+
+        # ||df(z) - df(x)||^2
+        diff_result = torch.stack([torch.einsum('NMaf->NM', (j1.unsqueeze(1) - j2.unsqueeze(0)) ** 2) for j1, j2 in zip(jac1, jac2)])
+        diff_result = diff_result.sum(0)
+        # diff_result = torch.zeros_like(result)
 
         param_dot_result = torch.stack([torch.einsum('Naf,f->N', j2, p.flatten()) for j2, p in zip(jac2, params)])
         param_dot_result = param_dot_result.sum(0)
@@ -335,10 +362,11 @@ def eval_NTK(net, data_A, data_B, init_params, outdim = -1):
             param_diff_dot_result = torch.stack([torch.einsum('Naf,f->N', j2, p.flatten() - ip.flatten()) for j2, p, ip in zip(jac2, params, init_params)])
             param_diff_dot_result = param_diff_dot_result.sum(0)
 
-        return result, param_dot_result, param_diff_dot_result
+        return result, diff_result, param_dot_result, param_diff_dot_result
     
     NTK_batchsize = 16
     result = torch.zeros((data_A.shape[0], data_B.shape[0]))
+    diff_result = torch.zeros((data_A.shape[0], data_B.shape[0]))
     param_dot_result = torch.zeros((data_B.shape[0]))
     param_diff_dot_result = torch.zeros((data_B.shape[0]))
 
@@ -347,29 +375,37 @@ def eval_NTK(net, data_A, data_B, init_params, outdim = -1):
 
     net_func = get_fnet_single(outdim)
 
-    for NTK_i in range(A_batches):
-        for NTK_j in range(B_batches):
+    def fill(si, ei, sj, ej):
+        result[si:ei, sj:ej], diff_result[si:ei, sj:ej], param_dot_result[sj:ej], param_diff_dot_result[sj:ej] = empirical_ntk_jacobian_contraction(
+            net_func,
+            params,
+            init_params,
+            data_A_dev[si:ei],
+            data_B_dev[sj:ej],
+            'trace'
+        )
 
+    if diag:
+        for NTK_i in range(A_batches):
             si = NTK_i * NTK_batchsize
-            sj = NTK_j * NTK_batchsize
             ei = si + NTK_batchsize
-            ej = sj + NTK_batchsize
-            
-            result[si:ei, sj:ej], param_dot_result[sj:ej], param_diff_dot_result[sj:ej] = empirical_ntk_jacobian_contraction(
-                net_func,
-                params,
-                init_params,
-                data_A_dev[si:ei],
-                data_B_dev[sj:ej],
-                'trace'
-            )
+            fill(si, ei, si, ei)
+
+    else:
+        for NTK_i in range(A_batches):
+            for NTK_j in range(B_batches):
+                si = NTK_i * NTK_batchsize
+                sj = NTK_j * NTK_batchsize
+                ei = si + NTK_batchsize
+                ej = sj + NTK_batchsize
+                fill(si, ei, sj, ej)
 
     print("Evaluated empirical NTK with shape: %s" % repr(result.shape))
 
     # Return net to previous device
     # net = net.to(prev_device)
 
-    return result, param_dot_result, param_diff_dot_result, params
+    return result, diff_result, param_dot_result, param_diff_dot_result, params
 
 
 
@@ -389,8 +425,8 @@ def main(hparams):
     seed = hparams.seed * (hparams.runid + 1)
     pl.seed_everything(seed)
     
-    main_datamodule, input_dim = get_data_module(hparams.dataset, hparams.batch_size, data_augmentation = (hparams.dataAug > 0))
-    train_NTK_data, val_NTK_data = obtain_NTK_data(main_datamodule, hparams.train_NTK_points, hparams.val_NTK_points)
+    main_datamodule, input_dim, output_dim = get_data_module(hparams.dataset, hparams.batch_size, data_augmentation = (hparams.dataAug > 0))
+    train_NTK_data, val_NTK_data, train_NTK_y, val_NTK_y = obtain_NTK_data(main_datamodule, hparams.train_NTK_points, hparams.val_NTK_points)
 
     if hparams.gaussian_test:
         val_NTK_data = torch.randn_like(val_NTK_data)
@@ -400,7 +436,7 @@ def main(hparams):
 
     def on_validation_epoch_end(self):
 
-        NTK_eval, g_p_dot, g_pDiff_dot, params = eval_NTK(
+        NTK_eval, grad_diff, g_p_dot, g_pDiff_dot, params = eval_NTK(
             nn.Sequential(self.net, self.head),
             NTK_data[0], NTK_data[1], self.initial_params, outdim
         )
@@ -408,9 +444,9 @@ def main(hparams):
         if self.initial_params is None:
             self.initial_params = copy.deepcopy(params)
 
-        NTK_val_val, _, _, _ = eval_NTK(
+        NTK_val_val, _, _, _, _ = eval_NTK(
             nn.Sequential(self.net, self.head),
-            NTK_data[1], NTK_data[1], self.initial_params, outdim
+            NTK_data[1], NTK_data[1], self.initial_params, outdim, diag = True
         )
 
         self.evaluated_NTKs.append(NTK_eval)
@@ -425,6 +461,9 @@ def main(hparams):
             NTK_val_val,
             g_p_dot,
             g_pDiff_dot,
+            grad_diff,
+            test_y = val_NTK_y,
+            vis_uncertainty = hparams.dataset == "toy-regression",
             outdim = outdim
         )
 
@@ -455,7 +494,7 @@ def main(hparams):
         wandb_logger._prefix = "model%d" % (i+1)
 
         # Init our model
-        model = models_dict[chosen_model](hparams, input_dim)
+        model = models_dict[chosen_model](hparams, input_dim, output_dim)
         model.initial_params = None
         model.on_validation_epoch_end = types.MethodType(on_validation_epoch_end, model)
 
@@ -466,6 +505,7 @@ def main(hparams):
         trainer = Trainer(
             gpus=1,
             max_epochs=hparams.epochs,
+            check_val_every_n_epoch=hparams.epochs // 10,
             # progress_bar_refresh_rate=20,
             enable_checkpointing=False,
 
@@ -508,7 +548,7 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", type=str, default='mnist')
 
     parser.add_argument("--train_NTK_points", type=int, default=2048)
-    parser.add_argument("--val_NTK_points", type=int, default=100)
+    parser.add_argument("--val_NTK_points", type=int, default=128)
     
     # Model
     parser.add_argument("--hidden_dim", type=int, default=2048)

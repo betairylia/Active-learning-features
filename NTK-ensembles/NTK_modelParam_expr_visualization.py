@@ -54,7 +54,7 @@ output: None
 behavior: will upload the following datatable to wandb run:
     - E[NTK(X,z)]; E[|NTK(X,z)|]; Maximum[NTK(X,z)]; <d_\theta f(z), \theta_T>
 '''
-def visualize(net, test_set, raw_NTK_eval, raw_NTK_eval_val_val, grad_param_dot = None, grad_paramDiff_dot = None, outdim = -1):
+def visualize(net, test_set, raw_NTK_eval, raw_NTK_eval_val_val, grad_param_dot = None, grad_paramDiff_dot = None, grad_diff = None, test_y = None, vis_uncertainty = False, outdim = -1):
 
     _, outputs_original = get_outputs_std(net, test_set, outdim = outdim, num_iters = 2)
     outputs_original = outputs_original[0, :, :]
@@ -112,6 +112,11 @@ def visualize(net, test_set, raw_NTK_eval, raw_NTK_eval_val_val, grad_param_dot 
     # breakpoint()
     table = wandb.Table(columns = list(all_data[0].keys()), data = [list(d.values()) for d in all_data])
     wandb.log({"NTK-experiment table": table})
+
+    fig, ax = plt.subplots()
+    sns.histplot(data = raw_NTK_eval.flatten(), bins = 64)
+    wandb.log({"Histogram of O(z, X)": wandb.Image(fig)})
+    plt.close('all')
     
     fig, ax = plt.subplots()
     sns.scatterplot(data = table.get_dataframe(), x = "<df(z)^2, param^2>", y = "E[O(X,z)]", ax = ax).invert_yaxis()
@@ -137,6 +142,11 @@ def visualize(net, test_set, raw_NTK_eval, raw_NTK_eval_val_val, grad_param_dot 
         fig, ax = plt.subplots()
         sns.scatterplot(data = table.get_dataframe(), x = "<df(z), param>-exact", y = "<df(z), paramDiff>-exact", ax = ax).invert_yaxis()
         wandb.log({"<grad, param>: exact || diff-exact": wandb.Image(fig)})
+        plt.close('all')
+
+        fig, ax = plt.subplots()
+        sns.scatterplot(data = table.get_dataframe(), x = "<df(z), paramDiff>-exact", y = "E[O(X,z)]", ax = ax).invert_yaxis()
+        wandb.log({"diff-exact || E_O": wandb.Image(fig)})
         plt.close('all')
 
     R_E_O = scipy.stats.pearsonr(outputs, E_O[:outputs.shape[0]]).statistic
@@ -174,6 +184,28 @@ def visualize(net, test_set, raw_NTK_eval, raw_NTK_eval_val_val, grad_param_dot 
     R_MOs = compare_PearsonR(E_max[:outputs.shape[0]], "Max[O(X,z)]")
     # TODO: Max[O(x, x) - 2*O(x, z)]
 
+    R_gdiff = {}
+    if grad_diff is not None:
+        minimum_gradDiff = torch.min(grad_diff, 0)[0]
+        R_gdiff = compare_PearsonR(minimum_gradDiff[:outputs.shape[0]], "Ozz + Oxx - 2Ozx")
+
+    def visualize_uncertainty(value, name):
+        fig, ax = plt.subplots()
+        ax.plot(test_set.squeeze(), outputs_original.squeeze())
+        if test_y is not None:
+            ax.plot(test_set.squeeze(), test_y.squeeze(), 'r--')
+        norm_val = value / torch.max(torch.abs(value))
+        ax.fill_between(test_set.squeeze(), outputs_original.squeeze() - norm_val.squeeze(), outputs_original.squeeze() + norm_val.squeeze(), alpha = 0.3)
+        wandb.log({"Uncertainty %s" % name: wandb.Image(fig)})
+        plt.close('all')
+
+    if vis_uncertainty == True:
+        visualize_uncertainty(minimum_gradDiff[:outputs.shape[0]], "Ozz + Oxx - 2Ozx")
+        visualize_uncertainty(O_zz[:outputs.shape[0]] - E_max[:outputs.shape[0]], "UB")
+        visualize_uncertainty(O_zz[:outputs.shape[0]] - E_O[:outputs.shape[0]], "zz-EOzx")
+        visualize_uncertainty(outputs_indep, "indep")
+        visualize_uncertainty(outputs_det, "det")
+
     wandb.log({
         "PearsonR O(z,z) - E[O(X,z)] || <,>": R_E_O,
         "PearsonR E[|O(X,z)] || <,>": R_E_abs_O,
@@ -182,5 +214,6 @@ def visualize(net, test_set, raw_NTK_eval, raw_NTK_eval_val_val, grad_param_dot 
         **R_ubs,
         **R_EOs,
         **R_MOs,
+        **R_gdiff,
     })
 

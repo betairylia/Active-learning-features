@@ -1710,6 +1710,7 @@ models_dict =\
     "inject-test-fluc": uq.InjectTest_Fluc,
     "inject-test-fluc-normed": uq.InjectTest_NormalizedFluc,
     "inject-test-subtract": uq.InjectTest_Subtract,
+    "inject-test-indepdet": uq.InjectTest_IndepDet
 }
 
 #################################################################
