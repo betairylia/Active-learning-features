@@ -37,6 +37,7 @@ import ot
 
 import uq_models as uq
 from uq_models import SimpleModel
+import random
 
 #################################################
 
@@ -1752,6 +1753,17 @@ def main(hparams):
     # Init our model
     model = models_dict[hparams.model](hparams, input_dim, main_datamodule.n_classes if not hparams.binary else 1)
 
+    # Test
+    # for i in range(1000):
+    #     idx1 = random.randint(0, len(main_datamodule.test_dataset) - 1)
+    #     idx2 = random.randint(0, len(main_datamodule.test_dataset) - 1)
+    #     x1 = main_datamodule.test_dataset[idx1][1]
+    #     x2 = main_datamodule.test_dataset[idx2][1]
+    #     dot_product = (x1 * x2).mean()
+    #     print(dot_product)
+
+    # exit(0)
+
     # Dirty workaround
     if has_func(model, "extra_init"):
 
@@ -1843,6 +1855,10 @@ if __name__ == "__main__":
     parser.add_argument("--perturb_max", type=float, default=0.1, help = "Perturb noise norm for last layer")
     parser.add_argument("--perturb_ex", type=float, default=0.1, help = "Perturb noise norm for subtract multiplicative")
     parser.add_argument("--perturb_nonlinear", type=float, default=0.0, help = "Perturb noise norm curve nonlinearity; >0 => more change towards last layer | <0 => more change towards first layer")
+
+    parser.add_argument("--add_temp", type=float, default=0.0, help = "Additive temperature for Indep-Det-Posterior")
+    parser.add_argument("--mul_temp", type=float, default=0.1, help = "Multiplicative temperature for Indep-Det-Posterior")
+    parser.add_argument("--indepdet_mode", type=str, default='posterior', help = "pure-fluctuation | posterior")
 
     # Visualization
     # TODO: FIXME:  Visalization is wrong. The r.v. is a dropout mask, then we need to plot (grad for parameter #j, hessian for parameter #j)

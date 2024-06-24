@@ -14,6 +14,7 @@ class InjectTest(SimpleModel):
         self.perturb_min = args.perturb_min
         self.perturb_max = args.perturb_max
         self.noise_pattern = args.noise_pattern
+        self.mul_temp = args.mul_temp
         
         self.combined_net = nn.Sequential(self.net, self.head)
         InjectNet(
@@ -28,7 +29,10 @@ class InjectTest(SimpleModel):
 
         # breakpoint()
 
-    def get_predictions(self, x, times = self.args.dropout_iters):
+    def get_predictions(self, x, times = -1):
+
+        if times <= 0:
+            times = self.args.dropout_iters
 
         resample_perturb(self.combined_net)
         enable_perturb(self.combined_net)
@@ -56,6 +60,26 @@ class InjectTest(SimpleModel):
         else:
 
             logits, probs = self.get_predictions(x)
+
+            if abs(self.mul_temp - 1) > 1e-2:
+
+                # Pop state
+                cache = get_states(self.combined_net)
+
+                # Compute original logits
+                set_perturb_norm(self.combined_net, noise_norm = 0, noise_pattern = 'prop-deterministic')
+                logits_original, probs_original = self.get_predictions(x, times = 1)
+
+                # Push state
+                set_states(self.combined_net, cache)
+
+                logits_diff = logits - logits_original
+                logits_scaled_diff = logits_diff * self.mul_temp
+                logits_new = logits_original + logits_scaled_diff
+                probs_new = F.softmax(logits_new, dim = -1)
+
+                logits = logits_new
+                probs = probs_new
 
             model_prediction = probs.mean(0)
             entropy = -torch.sum(model_prediction * torch.log(model_prediction + 1e-8), dim = 1)
@@ -124,6 +148,12 @@ class InjectTest_IndepDet(InjectTest):
         super().__init__(args, input_shape, output_dim)
 
         self.lambda_det = args.perturb_ex
+        self.add_temp = args.add_temp
+        self.mul_temp = args.mul_temp
+
+        # self.mode = "pure-fluctuation"
+        # self.mode = "posterior"
+        self.mode = args.indepdet_mode
 
     def forward(self, x):
 
@@ -148,14 +178,37 @@ class InjectTest_IndepDet(InjectTest):
             # Push state
             set_states(self.combined_net, cache)
 
-            det_diff = logits_det - logits_original
-            ub = logits.std(dim = 0) - self.lambda_det * det_diff.squeeze()
+            if self.mode == "pure-fluctuation":
 
-            ub = ub - torch.min(ub, dim = -1, keepdim = True)
+                det_diff = logits_det - logits_original
+                ub = logits.std(dim = 0) - self.lambda_det * det_diff.squeeze()
+                print("noise %f | det %f" % (logits.std(dim = 0).mean(), torch.abs(det_diff).mean()))
 
-            upperbound_sum = torch.sum(ub * probs_original.squeeze(), dim = -1)
-            fluctuation_mean = (logits.std(dim = 0)).mean(dim = -1)
+                ub = ub - torch.min(ub, dim = -1, keepdim = True)[0]
 
-            return logits.mean(dim = 0), upperbound_sum
+                upperbound_sum = torch.sum(ub * probs_original.squeeze(), dim = -1)
+                fluctuation_mean = (logits.std(dim = 0)).mean(dim = -1)
 
+                return logits.mean(dim = 0), upperbound_sum
+
+            elif self.mode == "posterior":
+
+                logits_diff = logits - logits_original
+                
+                det_diff = torch.abs(logits_det - logits_original)
+                logits_scale = (torch.ones_like(det_diff) - self.lambda_det * det_diff)
+                # print("Logits scale: %s" % repr(logits_scale))
+
+                # missed a sqrt here
+
+                logits_scaled_diff = logits_diff * torch.exp(self.mul_temp * (logits_scale + self.add_temp))
+                # print("Actual logits scale: %s" % repr(logits_scaled_diff / logits_diff))
+                logits_new = logits_original + logits_scaled_diff
+                probs_new = F.softmax(logits_new, dim = -1)
+
+                model_prediction = probs_new.mean(0)
+                entropy = -torch.sum(model_prediction * torch.log(model_prediction + 1e-8), dim = 1)
+                uncertainty = entropy
+
+                return logits_new.mean(dim = 0), uncertainty
 
