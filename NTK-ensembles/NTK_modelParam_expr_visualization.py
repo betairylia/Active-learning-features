@@ -45,6 +45,7 @@ def get_outputs_std(net, dataset, outdim = -1, num_iters = 30, device = torch.de
     raw_outputs = torch.cat(raw_outputs, dim=1).detach().cpu()
 
     return outputs, raw_outputs
+
 '''
 net: a torch.Model that can forward test_set
 test_set: enumerable containing test data

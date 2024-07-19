@@ -6,15 +6,15 @@ from torch import nn
 import math
 import wandb
 
-def Inject(module, *args, **kwargs):
+def Inject(module, module_init, *args, **kwargs):
 
     if isinstance(module, nn.Linear):
         print("[Injector] Supported layer: nn.Linear")
-        return Linear_ParameterInjector(module, *args, **kwargs)
+        return Linear_ParameterInjector(module, module_init, *args, **kwargs)
 
     elif isinstance(module, nn.Conv2d):
         print("[Injector] Supported layer: nn.Conv2d")
-        return Linear_ParameterInjector(module, *args, **kwargs)
+        return Linear_ParameterInjector(module, module_init, *args, **kwargs)
 
     else:
         print("[Injector] Unsupported layer: %s, Ignoring!" % module.__class__.__name__)
@@ -22,6 +22,7 @@ def Inject(module, *args, **kwargs):
 
 def InjectNet(
         net,
+        net_init = None,
         depth = 0,
         layers = [],
         perturb_nonlinear = 0.0,
@@ -40,7 +41,8 @@ def InjectNet(
 
     for name, child in net.named_children():
         print("[INJECTOR] Current layer: %s" % name)
-        new_module: Optional[nn.Module] = Inject(child, *args, **kwargs)
+        child_init = net_init.get_submodule(name) if net_init is not None else None
+        new_module: Optional[nn.Module] = Inject(child, child_init, *args, **kwargs)
         
         if new_module is not None:
 
@@ -51,7 +53,7 @@ def InjectNet(
             layers.append(new_module)
     
         # Do it recursively
-        InjectNet(child, depth+1, layers, *args, **kwargs)
+        InjectNet(child, child_init, depth+1, layers, *args, **kwargs)
 
     if depth == 0:
         print(net)
@@ -62,7 +64,7 @@ def InjectNet(
                 (((i / (len(layers) - 1)) if len(layers) > 1 else 1) ** math.exp(perturb_nonlinear)) * (perturb_max - perturb_min) + perturb_min
             )
             # print(layer.noise_norm)
-            wandb.log({"noise_norm": layer.noise_norm, "layer_index": i})
+            # wandb.log({"noise_norm": layer.noise_norm, "layer_index": i})
 
     return layers
 
@@ -128,10 +130,11 @@ class Linear_ParameterInjector(ParameterInjector):
     noise_norm: float
     noise_pattern: str | 'prop', 'indep', 'inv', 'subtract'
     '''
-    def __init__(self, moduleToWrap, *args, **kwargs):
+    def __init__(self, moduleToWrap, moduleToWrap_init, *args, **kwargs):
         
         super().__init__()
         self.module = moduleToWrap
+        self.module_init = moduleToWrap_init
         
         self.noise_norm = 0.1
         if 'noise_norm' in kwargs:
@@ -191,7 +194,7 @@ class Linear_ParameterInjector(ParameterInjector):
         self.weight_inject = torch.randn(*self.module.weight.shape, device = self.module.weight.device)
 
         if self.noise_pattern == 'prop':
-            self.weight_inject = self.noise_norm * self.weight_inject * self.module.weight
+            self.weight_inject = self.noise_norm * self.weight_inject * torch.abs(self.module.weight)
 
         elif self.noise_pattern == 'indep':
             self.weight_inject = self.noise_norm * self.weight_inject 
@@ -203,7 +206,11 @@ class Linear_ParameterInjector(ParameterInjector):
             self.weight_inject = (self.noise_norm - self.noise_norm * self.noise_norm_ex * torch.abs(self.module.weight)) * self.weight_inject
 
         elif self.noise_pattern == 'prop-deterministic':
-            self.weight_inject = self.noise_norm * self.module.weight 
+            if self.module_init is not None:
+                self.weight_inject = self.noise_norm * (self.module.weight - self.module_init.weight)
+                # self.weight_inject = self.noise_norm * self.module.weight 
+            else:
+                self.weight_inject = self.noise_norm * self.module.weight 
 
         # TODO: bias
 

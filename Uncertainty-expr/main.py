@@ -39,6 +39,8 @@ import uq_models as uq
 from uq_models import SimpleModel
 import random
 
+from pytorch_lightning.callbacks import ModelCheckpoint
+
 #################################################
 
 # class DataModule_(ImageClassificationData):
@@ -312,6 +314,12 @@ class RandomModel(SimpleModel):
         logits = self.head(self.net(x))
 
         return logits, torch.normal(torch.zeros(logits.shape[0], device = logits.device), torch.ones(logits.shape[0], device = logits.device))
+
+class CheckpointModel(SimpleModel):
+
+    def on_validation_epoch_end(self):
+        print(self.get_val_acc_seen())
+        super().on_validation_epoch_end()
 
 class NaiveDropoutModel(SimpleModel):
     
@@ -1675,6 +1683,7 @@ models_dict =\
 {
     "default": SimpleModel,
     "random": RandomModel,
+    "checkpoint": CheckpointModel,
     "mcdropout": MCDropoutModel,
     "tt_approx": TestTimeOnly_ApproximateDropoutModel,
     "naive-ensemble": NaiveEnsembleModel,
@@ -1718,6 +1727,17 @@ models_dict =\
 
 def has_func(obj, func_name):
     return hasattr(obj, func_name) and callable(getattr(obj, func_name))
+
+class InitialCheckpointsCallback(ModelCheckpoint):
+
+    def on_train_start(self, trainer, pl_module):
+        super().on_train_start(trainer, pl_module)
+        self.save_checkpoint(trainer)
+
+    def on_validation_end(self, trainer, pl_module):
+        super().on_validation_end(trainer, pl_module)
+        if(trainer.current_epoch + 1) < 10:
+            self.save_checkpoint(trainer)
 
 def main(hparams):
 
@@ -1787,16 +1807,28 @@ def main(hparams):
             )
         )
 
+    checkpoint_callback = InitialCheckpointsCallback(
+        dirpath  = "checkpoints/%s" % hparams.ckpt_path,
+        filename = "{epoch:04d}-{val_acc_seen:.2f}",
+        every_n_epochs = hparams.ckpt_interval,
+        save_top_k = -1
+    )
+
+    all_callbacks = []
+    if hparams.ckpt:
+        all_callbacks.append(checkpoint_callback)
+
     # Initialize a trainer
     trainer = Trainer.from_argparse_args(
         hparams,
         gpus=1,
         max_epochs=hparams.epochs,
-        enable_checkpointing=False,
+        enable_checkpointing=hparams.ckpt,
 
         # limit_val_batches = 0.0,
 
-        logger = wandb_logger
+        logger = wandb_logger,
+        callbacks = all_callbacks
     )
 
     if not hparams.no_train:
@@ -1837,6 +1869,12 @@ if __name__ == "__main__":
     parser.add_argument("--test_set_max", type=int, default=-1)
 
     parser.add_argument("--binary", type=int, default=0, help="Convert the problem to a binary classification. Splits the dataset into halves.")
+    parser.add_argument("--ckpt", type=int, default=0, help="Save checkpoints")
+    parser.add_argument("--ckpt_path", type=str, default="Untitled", help="Checkpoint save path")
+    parser.add_argument("--ckpt_interval", type=int, default=5, help="Checkpoint save interval (epochs)")
+
+    parser.add_argument("--load_ckpt", type=str, default=None, help="Checkpoint to load")
+    parser.add_argument("--load_ckpt_init", type=str, default=None, help="Checkpoint to load (as initialization t = t_s)")
     
     # Model
     parser.add_argument("--hidden_dim", type=int, default=2048)

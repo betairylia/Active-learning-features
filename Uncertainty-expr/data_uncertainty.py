@@ -131,6 +131,9 @@ class UncertaintyDataModule(pl.LightningDataModule):
 
     def get_standard_transforms(self):
         pass
+    
+    def get_standard_transforms_train(self):
+        return get_standard_transforms()
 
     def get_train_dataset(self, transform):
         pass
@@ -142,9 +145,10 @@ class UncertaintyDataModule(pl.LightningDataModule):
         if self.inited == False:
             self.inited = True
             standard_transform = self.get_standard_transforms()
+            standard_transform_train = self.get_standard_transforms_train()
 
             print("Loading raw datasets...")
-            self.train_dataset = self.get_train_dataset(transform = standard_transform)
+            self.train_dataset = self.get_train_dataset(transform = standard_transform_train)
             self.test_dataset = self.get_test_dataset(transform = standard_transform)
     
             if self.do_partial_train:
@@ -331,6 +335,17 @@ class CIFAR10_UncertaintyDM(UncertaintyDataModule):
 
     def get_standard_transforms(self):
         return transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+        ])
+        
+    def get_standard_transforms_train(self):
+        return transforms.Compose([
+            transforms.Resize((32,32)),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomRotation(10),
+            transforms.RandomAffine(0, shear=10, scale=(0.8,1.2)),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
             transforms.ToTensor(),
             transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
         ])
