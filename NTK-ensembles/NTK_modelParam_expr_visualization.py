@@ -96,7 +96,9 @@ def visualize(net, test_set, raw_NTK_eval, raw_NTK_eval_val_val, grad_param_dot 
             "O(z,z)": O_zz[i],
             "O(z,z)-E[O(X,z)]": O_zz[i] - E_O[i],
             "E[|O(X,z)|]": E_abs_O[i],
+            "O(z,z)-2E[|O(X,z)|]": O_zz[i] - 2 * E_abs_O[i],
             "Max[O(X,z)]": E_max[i],
+            "O(z,z)-2Max[O(X,z)]": O_zz[i] - 2 * E_max[i],
             "<df(z)^2, param^2>": outputs[i],
             "<df(z), param>-det": outputs_det[i],
             "df(z) norm": outputs_indep[i],
@@ -117,6 +119,11 @@ def visualize(net, test_set, raw_NTK_eval, raw_NTK_eval_val_val, grad_param_dot 
     fig, ax = plt.subplots()
     sns.histplot(data = raw_NTK_eval.flatten(), bins = 64)
     wandb.log({"Histogram of O(z, X)": wandb.Image(fig)})
+    plt.close('all')
+    
+    fig, ax = plt.subplots()
+    sns.scatterplot(data = table.get_dataframe(), x = "O(z,z) - 2E[|O(X,z)|]", y = "O(z,z)-2Max[O(X,z)]", ax = ax).invert_yaxis()
+    wandb.log({"absExp-UB || inf-UB": wandb.Image(fig)})
     plt.close('all')
     
     fig, ax = plt.subplots()
