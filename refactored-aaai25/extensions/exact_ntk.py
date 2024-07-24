@@ -24,7 +24,9 @@ class ExactNTKComputation(L.Callback):
         self.args = args
 
         self.batchsize = args.ntk_batchsize
-        self.downsample_by = 20
+        self.downsample_by = 30
+        self.per_epochs = 10
+        self.pre_epochs = 5
 
         # UQ Metrics
         self.uncertainty_auroc_inf = AveragePrecision(task="binary")
@@ -40,8 +42,14 @@ class ExactNTKComputation(L.Callback):
             num_workers = 0
         )
     
+    def check_epoch(self, ep):
+        return (ep > self.pre_epochs and ep % self.per_epochs == 0) or (ep <= self.pre_epochs)
+
     def on_validation_epoch_start(self, trainer, plm):
         
+        if not self.check_epoch(trainer.current_epoch):
+            return
+
         # Result containers
         self.inf_bounds = []
         self.avg_bounds = []
@@ -58,6 +66,9 @@ class ExactNTKComputation(L.Callback):
         )
     
     def on_validation_batch_end(self, trainer, plm, outputs, batch, bid, did = 0):
+
+        if not self.check_epoch(trainer.current_epoch):
+            return
 
         # Downsample the # of datapoints by self.downsample_by
         if bid % self.downsample_by != 0:
@@ -87,6 +98,9 @@ class ExactNTKComputation(L.Callback):
         self.ood_labels.append(o.cpu())
     
     def on_validation_epoch_end(self, trainer, plm):
+
+        if not self.check_epoch(trainer.current_epoch):
+            return
 
         self.inf_bounds = torch.cat(self.inf_bounds)
         self.avg_bounds = torch.cat(self.avg_bounds)
