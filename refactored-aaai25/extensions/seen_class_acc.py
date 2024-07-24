@@ -6,6 +6,10 @@ import lightning as L
 
 class SeenClassesAccuracy(L.Callback):
 
+    def __init__(self, args):
+        super().__init__()
+        self.args = args
+
     def setup(self, trainer, pl_module, stage):
         self.accuracy_seen = lambda p, y, o: ((torch.logical_and(p == y, o == 0)).float().sum() / (o == 0).float().sum()) if ((o == 0).float().sum() > 0) else None
         self.val_acc_seen = 0
@@ -24,10 +28,10 @@ class SeenClassesAccuracy(L.Callback):
 
         acc_seen = self.accuracy_seen(preds, y, o)
 
-        self.val_acc_seen += acc_seen
-        self.val_acc_seen_count += 1
-
-        plm.log("val_acc_seen", acc_seen, prog_bar = True)
+        if acc_seen is not None:
+            self.val_acc_seen += acc_seen
+            self.val_acc_seen_count += 1
+            plm.log("val_acc_seen", acc_seen, prog_bar = True)
     
     def on_validation_epoch_end(self, trainer, plm):
 

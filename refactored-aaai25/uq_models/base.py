@@ -1,10 +1,10 @@
 import os
 
 import torch
-from lightning import LightningModule, Trainer
 from torch import nn
 from torch.nn import functional as F
 from torchmetrics import Accuracy, AUROC, AveragePrecision
+from lightning import LightningModule, Trainer
 
 import torchvision
 from torchvision import datasets
@@ -30,30 +30,6 @@ import math
 import copy
 # import ot
 
-def BestAccuracySweep(num_sweeps = 256):
-    
-    def foo(scores, labels):
-
-        min_score = scores.min()
-        max_score = scores.max()
-        
-        if torch.is_tensor(min_score):
-            min_score = min_score.item()
-        if torch.is_tensor(max_score):
-            max_score = max_score.item()
-
-        best_acc = 0
-        best_threshold = 0
-        for threshold in torch.linspace(min_score, max_score, num_sweeps):
-            acc = ((scores >= threshold) == labels).float().mean()
-            if acc > best_acc:
-                best_acc = acc
-                best_threshold = threshold
-        
-        return best_acc, best_threshold
-    
-    return foo
-
 class RuntimeDataCache:
     pass
 
@@ -65,7 +41,7 @@ class SimpleModel(LightningModule):
      - accuracy
      - UQ visualization (and in general, all visualization)
     '''
-    def __init__(self, args, dm_header, loss, metrics):
+    def __init__(self, args, dm_header, loss, metrics, reference_dataset = None):
 
         super().__init__()
 
@@ -100,6 +76,9 @@ class SimpleModel(LightningModule):
         # Metrics
         self.metrics = metrics
 
+        # Reference dataset loader
+        self.ref_data = reference_dataset
+
         # Not sure how to let lightning record model outputs correctly
         # So we use this workaround instead.
         # This is a literally empty object that will hold any data provided.
@@ -107,7 +86,7 @@ class SimpleModel(LightningModule):
 
         # UQ Metrics
         self.uncertainty_auroc = AveragePrecision(task="binary")
-        self.uncertainty_acc = BestAccuracySweep()
+        self.uncertainty_acc = utils.BestAccuracySweep()
 
         self.val_uncertainty_scores = []
         self.val_uncertainty_labels = []

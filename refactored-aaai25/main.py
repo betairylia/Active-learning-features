@@ -89,13 +89,9 @@ def main(hparams):
 
     loss, metrics = lossmetrics.get_loss_and_metrics(hparams, dm_header)
 
-    # Init our model
-    model = uq.models_dict[hparams.model](hparams, dm_header, loss, metrics)
-
-    # Dirty workaround
-    # extra_init for calibaration dataloader -> Rewrite as a callback maybe?
-    if has_func(model, "extra_init"):
-
+    # Prepare optional calibration dataset for reference
+    ref_data = None
+    if hparams.use_reference_dataset:
         if hparams.contaminate_ref:
             ref_data = torch.utils.data.Subset(
                 main_datamodule.test_dataset,
@@ -107,14 +103,8 @@ def main(hparams):
                 np.random.choice(len(main_datamodule.train_dataset), size = (hparams.reference_data_count,))
             )
 
-        model.extra_init(
-            torch.utils.data.DataLoader(
-                ref_data,
-                batch_size = 1,
-                shuffle = False,
-                num_workers = 0
-            )
-        )
+    # Init our model
+    model = uq.models_dict[hparams.model](hparams, dm_header, loss, metrics, ref_data)
 
     # Checkpointing
     checkpoint_callback = InitialCheckpointsCallback(
@@ -180,6 +170,7 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", type=str, default='mnist')
     parser.add_argument("--do_partial_train", type=int, default=0)
     parser.add_argument("--use_full_trainset", type=int, default=1)
+    parser.add_argument("--use_reference_dataset", type=int, default=0)
     parser.add_argument("--do_contamination", type=int, default=1)
     parser.add_argument("--num_workers", type=int, default=16)
     parser.add_argument("--test_set_max", type=int, default=-1)
@@ -234,6 +225,8 @@ if __name__ == "__main__":
     parser = parent_parser.add_argument_group("Extensions")
     parser.add_argument('--dataset-vis', type=int, default=0, help="Visualize dataset from the first batch")
     parser.add_argument('--seen-class-acc', type=int, default=1, help="Compute accuracy for seen (IN) classes")
+    parser.add_argument('--exact-ntk-inf', type=int, default=0, help="Compute exact NTKs for uncertainty infimum upperbounds, with reference training set")
+    parser.add_argument('--ntk-batchsize', type=int, default=4, help="batchsize for NTK computation")
     
     parser = parent_parser.add_argument_group("Run metadata / WandB sweeps")
     parser.add_argument('--keyargs', type=str, default="", help='Key variables in HP tune, splitted in commas')

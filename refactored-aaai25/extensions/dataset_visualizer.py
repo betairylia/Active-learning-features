@@ -3,9 +3,10 @@ from utils import ImageMosaicSQ
 
 class DatasetVisualizer(L.Callback):
 
-    def __init__(self):
+    def __init__(self, args):
         super().__init__()
         self.visualized = False
+        self.args = args
     
     def on_validation_batch_start(self, trainer, plm, batch, batch_idx, dataloader_idx = 0):
 

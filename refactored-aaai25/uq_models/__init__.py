@@ -1,4 +1,5 @@
 from .base import SimpleModel
+from .ntkbased import *
 
 models_dict =\
 {
@@ -42,4 +43,6 @@ models_dict =\
     # "inject-test-fluc-normed": uq.InjectTest_NormalizedFluc,
     # "inject-test-subtract": uq.InjectTest_Subtract,
     # "inject-test-indepdet": uq.InjectTest_IndepDet
+
+    "ntk-test": NTKTest,
 }
