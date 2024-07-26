@@ -99,8 +99,8 @@ def main(hparams):
             )
         else:
             ref_data = torch.utils.data.Subset(
-                main_datamodule.train_dataset,
-                np.random.choice(len(main_datamodule.train_dataset), size = (hparams.reference_data_count,))
+                main_datamodule.ref_dataset,
+                np.random.choice(len(main_datamodule.ref_dataset), size = (hparams.reference_data_count,))
             )
 
     # Init our model
@@ -185,7 +185,7 @@ if __name__ == "__main__":
     
     # Model
     parser.add_argument("--hidden_dim", type=int, default=2048)
-    parser.add_argument("--dropout_rate", type=float, default=0.85)
+    parser.add_argument("--dropout_rate", type=float, default=0.0)
     parser.add_argument("--dropout_iters", type=int, default=10)
     parser.add_argument("--lazy_scaling", type=float, default=1)
     parser.add_argument("--pointwise_linearization", type=int, default=1)

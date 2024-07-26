@@ -34,7 +34,12 @@ class ExactNTKComputation(L.Callback):
         self.uncertainty_acc = utils.BestAccuracySweep()
 
     def setup(self, trainer, plm, stage):
-        self.ntk = NTKHelper(plm.net)
+
+        self.ntk = NTKHelper(
+            plm.net,
+            filtering = lambda n, s : True
+        )
+
         self.ref_dl = torch.utils.data.DataLoader(
             plm.ref_data,
             batch_size = self.batchsize,
@@ -61,8 +66,8 @@ class ExactNTKComputation(L.Callback):
         self.Oxx = self.ntk.compute_ntk(
             self.ref_dl, self.ref_dl,
             batch_mode = '1to1',
-            x1_map = lambda batch : batch[1], # i, x, y, o
-            x2_map = lambda batch : batch[1], 
+            x1_map = lambda batch : batch[0], # i, x, y, o
+            x2_map = lambda batch : batch[0], 
         )
     
     def on_validation_batch_end(self, trainer, plm, outputs, batch, bid, did = 0):
@@ -83,7 +88,7 @@ class ExactNTKComputation(L.Callback):
 
         self.Ozx = self.ntk.compute_ntk(
             x, self.ref_dl,
-            x2_map = lambda batch : batch[1], # i, x, y, o
+            x2_map = lambda batch : batch[0], # i, x, y, o
         )
 
         # Oxx: Tensor[|X|]
@@ -121,9 +126,10 @@ class ExactNTKComputation(L.Callback):
         plm.log("val_NTK_inf-avg_R", infavgR, prog_bar = False)
 
         fig, ax = plt.subplots()
-        ax.scatter(self.inf_bounds, self.avg_bounds)
+        scatter = ax.scatter(self.inf_bounds, self.avg_bounds, c = self.ood_labels)
+        plt.colorbar(scatter)
         ax.set_xlabel("infimum")
         ax.set_ylabel("average-abs")
         ax.set_title("R: %f" % infavgR)
-        wandb.log({"Empirical NTK - inf bound (X) vs. avg-abs bound (Y)": wandb.Image(fig)})
+        wandb.log({"Empirical NTK - inf bound (X) vs. avg-abs bound (Y); c: OOD label": wandb.Image(fig)})
         plt.close('all')

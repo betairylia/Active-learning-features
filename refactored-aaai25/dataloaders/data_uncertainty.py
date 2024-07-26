@@ -132,8 +132,11 @@ class UncertaintyDataModule(pl.LightningDataModule):
     def get_standard_transforms(self):
         pass
     
+    def get_standard_transforms_calibration(self):
+        return self.get_standard_transforms()
+
     def get_standard_transforms_train(self):
-        return get_standard_transforms()
+        return self.get_standard_transforms()
 
     def get_train_dataset(self, transform):
         pass
@@ -146,9 +149,11 @@ class UncertaintyDataModule(pl.LightningDataModule):
             self.inited = True
             standard_transform = self.get_standard_transforms()
             standard_transform_train = self.get_standard_transforms_train()
+            standard_transform_calibration = self.get_standard_transforms_calibration()
 
             print("Loading raw datasets...")
             self.train_dataset = self.get_train_dataset(transform = standard_transform_train)
+            self.ref_dataset = self.get_train_dataset(transform = standard_transform_calibration)
             self.test_dataset = self.get_test_dataset(transform = standard_transform)
     
             if self.do_partial_train:
