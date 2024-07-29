@@ -230,9 +230,9 @@ if __name__ == "__main__":
     parser.add_argument('--ntk_batchsize', type=int, default=4, help="batchsize for NTK computation")
 
     parser = parent_parser.add_argument_group("TTUQ")
-    parser.add_argument("--ttuq_lambda", type=float, default=1.0, help = "lambda * (Ozz - K * Oxz)")
+    parser.add_argument("--ttuq_lambda", type=float, default=0.005, help = "lambda * (Ozz - K * Oxz)")
     parser.add_argument("--ttuq_K", type=float, default=1.0, help = "lambda * (Ozz - K * Oxz)")
-    parser.add_argument("--ttuq_delta", type=float, default=0.005, help = "perturb strength for grad-param product estimation")
+    parser.add_argument("--ttuq_delta", type=float, default=2.0, help = "perturb strength for grad-param product estimation")
     parser.add_argument("--ttuq_scaling", type=str, default='layerwise', help = "Scaling scheme. none | paramwise | layerwise | netwise")
     
     parser = parent_parser.add_argument_group("Run metadata / WandB sweeps")
