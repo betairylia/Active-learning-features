@@ -97,7 +97,7 @@ def ImageMosaicSQ(images, norm = True):
 
 def log(s_obj, lvl = "INFO"):
 
-    s = repr(s_obj)
+    s = str(s_obj)
     firsted = False
     header = ""
 

@@ -68,7 +68,11 @@ class SimpleModel(LightningModule):
         )
 
         self.net_init = copy.deepcopy(self.net)
-        self.try_load_ckpt(args.load_ckpt, args.load_ckpt_init)
+        init_loaded = self.try_load_ckpt(args.load_ckpt, args.load_ckpt_init)
+
+        # Try to remove net_init if no training is happening
+        if not init_loaded and self.args.no_train:
+            self.net_init = None
 
         # Loss related
         self.loss = loss
@@ -104,19 +108,19 @@ class SimpleModel(LightningModule):
     def try_load_ckpt(self, path, path_init):
         
         if path == None:
-            return
+            return False
 
         loaded = torch.load(path)["state_dict"]
         self.net.load_state_dict(self.filter_rename_ckpt(loaded, "net"))
 
         if path_init == None:
             self.net_init.load_state_dict(self.filter_rename_ckpt(loaded, "net_init"))
-            return
+            return False
 
         loaded = torch.load(path_init)["state_dict"]
         self.net_init.load_state_dict(self.filter_rename_ckpt(loaded, "net"))
 
-        return
+        return True
     
     def forward(self, x):
 

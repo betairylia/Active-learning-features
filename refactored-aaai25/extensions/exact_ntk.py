@@ -17,16 +17,17 @@ import scipy
 import utils
 import wandb
 
-class ExactNTKComputation(L.Callback):
+from .commons import Extension
+
+class ExactNTKComputation(Extension):
 
     def __init__(self, args):
         super().__init__()
-        self.args = args
 
         self.batchsize = args.ntk_batchsize
         self.downsample_by = 30
-        self.per_epochs = 10
-        self.pre_epochs = 5
+        self.per_epochs = 45
+        self.pre_epochs = 1
 
         # UQ Metrics
         self.uncertainty_auroc_inf = AveragePrecision(task="binary")
@@ -37,7 +38,7 @@ class ExactNTKComputation(L.Callback):
 
         self.ntk = NTKHelper(
             plm.net,
-            filtering = lambda n, s : True
+            # filtering = lambda n, s : True
         )
 
         self.ref_dl = torch.utils.data.DataLoader(

@@ -3,12 +3,9 @@ from torch import nn
 from torch.nn import functional as F
 
 import lightning as L
+from .commons import Extension
 
-class SeenClassesAccuracy(L.Callback):
-
-    def __init__(self, args):
-        super().__init__()
-        self.args = args
+class SeenClassesAccuracy(Extension):
 
     def setup(self, trainer, pl_module, stage):
         self.accuracy_seen = lambda p, y, o: ((torch.logical_and(p == y, o == 0)).float().sum() / (o == 0).float().sum()) if ((o == 0).float().sum() > 0) else None

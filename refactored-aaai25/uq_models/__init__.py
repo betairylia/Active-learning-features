@@ -1,5 +1,6 @@
 from .base import SimpleModel
 from .ntkbased import *
+from .ttuq_family import *
 
 models_dict =\
 {
@@ -45,4 +46,9 @@ models_dict =\
     # "inject-test-indepdet": uq.InjectTest_IndepDet
 
     "ntk-test": NTKTest,
+
+    "ttuq-Ozz": TTUQBase,
+    "ttuq-adaptive": TTUQAdaptiveScaling,
+    "ttuq-complete": TTUQComplete,
+    "ttuq-complete-posterior": TTUQCompletePosterior
 }

@@ -223,10 +223,16 @@ if __name__ == "__main__":
     parser.add_argument('--augTrials', type=int, default=4, help="Trials per augmentation (ignored if augmentation disabled)")
 
     parser = parent_parser.add_argument_group("Extensions")
-    parser.add_argument('--dataset-vis', type=int, default=0, help="Visualize dataset from the first batch")
-    parser.add_argument('--seen-class-acc', type=int, default=1, help="Compute accuracy for seen (IN) classes")
-    parser.add_argument('--exact-ntk-inf', type=int, default=0, help="Compute exact NTKs for uncertainty infimum upperbounds, with reference training set")
-    parser.add_argument('--ntk-batchsize', type=int, default=4, help="batchsize for NTK computation")
+    parser.add_argument('--dataset_vis', type=int, default=0, help="Visualize dataset from the first batch")
+    parser.add_argument('--logits_stats', type=int, default=1, help="Visualizes statstics of logits")
+    parser.add_argument('--seen_class_acc', type=int, default=1, help="Compute accuracy for seen (IN) classes")
+    parser.add_argument('--exact_ntk_inf', type=int, default=0, help="Compute exact NTKs for uncertainty infimum upperbounds, with reference training set")
+    parser.add_argument('--ntk_batchsize', type=int, default=4, help="batchsize for NTK computation")
+
+    parser = parent_parser.add_argument_group("TTUQ")
+    parser.add_argument("--ttuq_lambda", type=float, default=1.0, help = "lambda * (Ozz - K * Oxz)")
+    parser.add_argument("--ttuq_K", type=float, default=1.0, help = "lambda * (Ozz - K * Oxz)")
+    parser.add_argument("--ttuq_delta", type=float, default=0.005, help = "perturb strength for grad-param product estimation")
     
     parser = parent_parser.add_argument_group("Run metadata / WandB sweeps")
     parser.add_argument('--keyargs', type=str, default="", help='Key variables in HP tune, splitted in commas')

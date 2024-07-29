@@ -1,9 +1,10 @@
-from .dataset_visualizer import *
+from .commons import *
 from .seen_class_acc import *
 from .exact_ntk import *
 
 CallbackDict = {
     "dataset_vis": DatasetVisualizer,
+    "logits_stats": LogitsStatstics,
     "seen_class_acc": SeenClassesAccuracy,
     "exact_ntk_inf": ExactNTKComputation,
 }
