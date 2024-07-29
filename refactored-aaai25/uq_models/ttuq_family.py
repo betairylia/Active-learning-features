@@ -18,6 +18,7 @@ class TTUQBase(SimpleModel):
         self.perturb_min = args.perturb_min
         self.perturb_max = args.perturb_max
         self.noise_pattern = args.noise_pattern
+        self.scaling = args.ttuq_scaling
 
         self.inject(args)
     
@@ -29,7 +30,8 @@ class TTUQBase(SimpleModel):
             perturb_nonlinear = self.perturb_nonlinear,
             perturb_min = self.perturb_min,
             perturb_max = self.perturb_max,
-            noise_pattern = self.noise_pattern
+            noise_pattern = self.noise_pattern,
+            perturb_adaptive = self.scaling,
         )
 
     def get_predictions(self, x, times = -1):
@@ -60,23 +62,23 @@ class TTUQBase(SimpleModel):
 
         logits = self.get_predictions(x)
 
-        if abs(self.lambd - 1) > 1e-2:
+        # if abs(self.lambd - 1) > 1e-2:
 
-            # Pop state
-            cache = get_states(self.net)
+        #     # Pop state
+        #     cache = get_states(self.net)
 
-            # Compute original logits
-            set_perturb_norm(self.net, noise_norm = 0, noise_pattern = 'prop-deterministic')
-            logits_original = self.get_predictions(x, times = 1)
+        #     # Compute original logits
+        #     set_perturb_norm(self.net, noise_norm = 0, noise_pattern = 'prop-deterministic')
+        #     logits_original = self.get_predictions(x, times = 1)
 
-            # Push state
-            set_states(self.net, cache)
+        #     # Push state
+        #     set_states(self.net, cache)
 
-            logits_diff = logits - logits_original
-            logits_scaled_diff = logits_diff * self.lambd
-            logits_new = logits_original + logits_scaled_diff
+        #     logits_diff = logits - logits_original
+        #     logits_scaled_diff = logits_diff * self.lambd
+        #     logits_new = logits_original + logits_scaled_diff
 
-            logits = logits_new
+        #     logits = logits_new
 
         uncertainty = self.entropy(logits)
 
@@ -96,19 +98,22 @@ class TTUQBase(SimpleModel):
 
 class TTUQAdaptiveScaling(TTUQBase):
 
-    def inject(self, args):
+    # def inject(self, args):
         
         # perturb norm should be approx. 15% of weight norm (L1)
 
-        all_layers = InjectNet(
-            self.net,
-            self.net_init,
-            perturb_nonlinear = 0.0,
-            perturb_min = self.args.perturb_power,
-            perturb_max = self.args.perturb_power,
-            perturb_adaptive = 'inv-param-norm',
-            noise_pattern = self.noise_pattern
-        )
+        # all_layers = InjectNet(
+        #     self.net,
+        #     self.net_init,
+        #     perturb_nonlinear = 0.0,
+        #     perturb_min = self.args.perturb_power,
+        #     perturb_max = self.args.perturb_power,
+        #     perturb_adaptive = 'param-norm',
+        #     noise_pattern = self.noise_pattern
+        # )
+
+    # Class is obselete as adaptive scaling has become a hyperparam and handled in TTUQBase.
+    pass
 
 class TTUQComplete(TTUQAdaptiveScaling):
 

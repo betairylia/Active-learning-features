@@ -65,6 +65,10 @@ def InjectNet(
         utils.log(net)
         utils.log(len(layers))
         
+        ##############################################
+        # Adaptive scaling
+        #
+
         layer_norms = []
         if perturb_adaptive == 'none':
             layer_norms = [
@@ -72,17 +76,36 @@ def InjectNet(
                 for i in range(len(layers))
             ]
         
-        elif perturb_adaptive == 'inv-param-norm':
+        elif perturb_adaptive == 'paramwise':
+            utils.log("--ttuq_scaling paramwise is NOT IMPLEMENTED. Use --noise_pattern prop instead.")
+            raise
+
+        elif perturb_adaptive == 'layerwise':
             param_norm = torch.Tensor([l.get_param_norm() for l in layers])
             raw_param_norm = param_norm
             # param_norm = 1 / param_norm
-            param_norm = param_norm / param_norm.max()
+            # param_norm = param_norm / param_norm.max()
             layer_norms = param_norm * perturb_max
 
             utils.log("Adaptive Layer-wise scaling info")
             utils.log("%5s %12s %12s" % ("No.", "param_norm", "perturb_norm"))
             utils.log("\n".join(["%5d %12.7f %12.7f" % (i, p, l) for i, (l, p) in enumerate(zip(layer_norms, raw_param_norm))]))
+
+        elif perturb_adaptive == 'netwise':
+
+            param_norm = torch.Tensor([l.get_param_norm() for l in layers])
+            raw_param_norm = param_norm
+            param_norm = param_norm.mean()
+            layer_norms = [param_norm.item() * perturb_max for l in layers]
+
+            utils.log("Adaptive Layer-wise scaling info")
+            utils.log("%5s %12s %12s" % ("No.", "param_norm", "perturb_norm"))
+            utils.log("\n".join(["%5d %12.7f %12.7f" % (i, p, l) for i, (l, p) in enumerate(zip(layer_norms, raw_param_norm))]))
         
+        else:
+            utils.log("--ttuq_scaling %s does not exist." % perturb_adaptive)
+            raise
+
         # Apply layer-wise scaling
         for i, layer in enumerate(layers):
             layer.set_norm(

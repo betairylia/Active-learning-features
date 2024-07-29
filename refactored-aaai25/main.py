@@ -195,10 +195,10 @@ if __name__ == "__main__":
     parser.add_argument("--num_multidim", type=int, default=32)
 
     parser.add_argument("--noise_pattern", type=str, default='prop', help = "prop | indep | inv")
-    parser.add_argument("--perturb_power", type=float, default=-1, help = "Overrides perturb_min / max if set to value above 0")
-    parser.add_argument("--perturb_min", type=float, default=0.1, help = "Perturb noise norm for 1st layer")
-    parser.add_argument("--perturb_max", type=float, default=0.1, help = "Perturb noise norm for last layer")
-    parser.add_argument("--perturb_ex", type=float, default=0.1, help = "Perturb noise norm for subtract multiplicative")
+    parser.add_argument("--perturb_power", type=float, default=0.15, help = "Overrides perturb_min / max if set to value above 0")
+    parser.add_argument("--perturb_min", type=float, default=0.15, help = "Perturb noise norm for 1st layer")
+    parser.add_argument("--perturb_max", type=float, default=0.15, help = "Perturb noise norm for last layer")
+    parser.add_argument("--perturb_ex", type=float, default=1.0, help = "Perturb noise norm for subtract multiplicative")
     parser.add_argument("--perturb_nonlinear", type=float, default=0.0, help = "Perturb noise norm curve nonlinearity; >0 => more change towards last layer | <0 => more change towards first layer")
 
     parser.add_argument("--add_temp", type=float, default=0.0, help = "Additive temperature for Indep-Det-Posterior")
@@ -233,6 +233,7 @@ if __name__ == "__main__":
     parser.add_argument("--ttuq_lambda", type=float, default=1.0, help = "lambda * (Ozz - K * Oxz)")
     parser.add_argument("--ttuq_K", type=float, default=1.0, help = "lambda * (Ozz - K * Oxz)")
     parser.add_argument("--ttuq_delta", type=float, default=0.005, help = "perturb strength for grad-param product estimation")
+    parser.add_argument("--ttuq_scaling", type=str, default='layerwise', help = "Scaling scheme. none | paramwise | layerwise | netwise")
     
     parser = parent_parser.add_argument_group("Run metadata / WandB sweeps")
     parser.add_argument('--keyargs', type=str, default="", help='Key variables in HP tune, splitted in commas')
