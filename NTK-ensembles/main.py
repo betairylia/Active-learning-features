@@ -297,8 +297,8 @@ def obtain_NTK_data(main_datamodule, n_train = 256, n_val = 100):
     train_NTK_data = torch.stack([train_set[i][0] for i in indices_train])
     val_NTK_data = torch.stack([val_set[i][0] for i in indices_val])
 
-    train_NTK_y = torch.stack([train_set[i][1] for i in indices_train])
-    val_NTK_y = torch.stack([val_set[i][1] for i in indices_val])
+    train_NTK_y = torch.stack([torch.LongTensor([train_set[i][1]]) for i in indices_train])
+    val_NTK_y = torch.stack([torch.LongTensor([val_set[i][1]]) for i in indices_val])
 
     return train_NTK_data, val_NTK_data, train_NTK_y, val_NTK_y
 
@@ -433,6 +433,9 @@ def main(hparams):
 
     NTK_data = [train_NTK_data, val_NTK_data]
     outdim = hparams.NTK_outdim
+
+    import wandb
+    wandb.init()
 
     def on_validation_epoch_end(self):
 

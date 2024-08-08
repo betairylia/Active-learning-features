@@ -6,25 +6,31 @@ from torch import nn
 import math
 import wandb
 
+import utils
+
 def Inject(module, module_init, *args, **kwargs):
 
     if isinstance(module, nn.Linear):
-        print("[Injector] Supported layer: nn.Linear")
+        utils.log("[Injector] Supported layer: nn.Linear")
         return Linear_ParameterInjector(module, module_init, *args, **kwargs)
 
     elif isinstance(module, nn.Conv2d):
-        print("[Injector] Supported layer: nn.Conv2d")
+        utils.log("[Injector] Supported layer: nn.Conv2d")
         return Linear_ParameterInjector(module, module_init, *args, **kwargs)
 
     else:
-        print("[Injector] Unsupported layer: %s, Ignoring!" % module.__class__.__name__)
+        utils.log("[Injector] Unsupported layer: %s, Ignoring!" % module.__class__.__name__)
         return None
 
+# In-place modification that injects noise perturbation functions to `net`
 def InjectNet(
         net,
         net_init = None,
         depth = 0,
         layers = [],
+
+        perturb_adaptive = 'none',
+
         perturb_nonlinear = 0.0,
         perturb_min = 0.1,
         perturb_max = 0.1,
@@ -36,11 +42,11 @@ def InjectNet(
         layers = []
 
     if depth > 100:
-        print("[INJECTOR] MAX RECURSION DEPTH")
+        utils.log("[INJECTOR] MAX RECURSION DEPTH")
         return False
 
     for name, child in net.named_children():
-        print("[INJECTOR] Current layer: %s" % name)
+        utils.log("[INJECTOR] Current layer: %s" % name)
         child_init = net_init.get_submodule(name) if net_init is not None else None
         new_module: Optional[nn.Module] = Inject(child, child_init, *args, **kwargs)
         
@@ -56,14 +62,57 @@ def InjectNet(
         InjectNet(child, child_init, depth+1, layers, *args, **kwargs)
 
     if depth == 0:
-        print(net)
-        print(len(layers))
+        utils.log(net)
+        utils.log(len(layers))
+        
+        ##############################################
+        # Adaptive scaling
+        #
 
+        layer_norms = []
+        if perturb_adaptive == 'none':
+            layer_norms = [
+                (((i / (len(layers) - 1)) if len(layers) > 1 else 1) ** math.exp(perturb_nonlinear)) * (perturb_max - perturb_min) + perturb_min
+                for i in range(len(layers))
+            ]
+        
+        elif perturb_adaptive == 'paramwise':
+            utils.log("--ttuq_scaling paramwise is NOT IMPLEMENTED. Use --noise_pattern prop instead.")
+            raise
+
+        elif perturb_adaptive == 'layerwise':
+            param_norm = torch.Tensor([l.get_param_norm() for l in layers])
+            raw_param_norm = param_norm
+            # param_norm = 1 / param_norm
+            # param_norm = param_norm / param_norm.max()
+            # layer_norms = param_norm * perturb_max
+            layer_norms = 1 / torch.sqrt(param_norm) * perturb_max
+
+            utils.log("Adaptive Layer-wise scaling info")
+            utils.log("%5s %12s %12s" % ("No.", "param_norm", "perturb_norm"))
+            utils.log("\n".join(["%5d %12.7f %12.7f" % (i, p, l) for i, (l, p) in enumerate(zip(layer_norms, raw_param_norm))]))
+
+        elif perturb_adaptive == 'netwise':
+
+            param_norm = torch.Tensor([l.get_param_norm() for l in layers])
+            raw_param_norm = param_norm
+            param_norm = param_norm.mean()
+            layer_norms = [param_norm.item() * perturb_max for l in layers]
+
+            utils.log("Adaptive Layer-wise scaling info")
+            utils.log("%5s %12s %12s" % ("No.", "param_norm", "perturb_norm"))
+            utils.log("\n".join(["%5d %12.7f %12.7f" % (i, p, l) for i, (l, p) in enumerate(zip(layer_norms, raw_param_norm))]))
+        
+        else:
+            utils.log("--ttuq_scaling %s does not exist." % perturb_adaptive)
+            raise
+
+        # Apply layer-wise scaling
         for i, layer in enumerate(layers):
             layer.set_norm(
-                (((i / (len(layers) - 1)) if len(layers) > 1 else 1) ** math.exp(perturb_nonlinear)) * (perturb_max - perturb_min) + perturb_min
+                layer_norms[i]
             )
-            # print(layer.noise_norm)
+            # breakpoint()
             # wandb.log({"noise_norm": layer.noise_norm, "layer_index": i})
 
     return layers
@@ -123,6 +172,9 @@ class ParameterInjector(nn.Module):
     
     def sample(self, *args, **kwargs):
         pass
+    
+    def get_param_norm(self, *args, **kwargs):
+        return 0
 
 class Linear_ParameterInjector(ParameterInjector):
 
@@ -144,7 +196,7 @@ class Linear_ParameterInjector(ParameterInjector):
         if 'noise_pattern' in kwargs:
             self.noise_pattern = kwargs['noise_pattern']
 
-        self.noise_norm_ex = 1.5 
+        self.noise_norm_ex = 1.0 
         if 'noise_norm_ex' in kwargs:
             self.noise_norm_ex = kwargs['noise_norm_ex']
 
@@ -178,11 +230,11 @@ class Linear_ParameterInjector(ParameterInjector):
             self.noise_norm_ex = noise_norm_ex
 
     def enable(self, *args, **kwargs):
-        # print("Enabled Linear_PI")
+        # utils.log("Enabled Linear_PI")
         self.enabled = True
     
     def disable(self, *args, **kwargs):
-        # print("Disabled Linear_PI")
+        # utils.log("Disabled Linear_PI")
         self.enabled = False
     
     def sample(self, *args, **kwargs):
@@ -207,12 +259,21 @@ class Linear_ParameterInjector(ParameterInjector):
 
         elif self.noise_pattern == 'prop-deterministic':
             if self.module_init is not None:
-                self.weight_inject = self.noise_norm * (self.module.weight - self.module_init.weight)
+                self.weight_inject = self.noise_norm * self.noise_norm_ex * (self.module.weight - self.module_init.weight)
                 # self.weight_inject = self.noise_norm * self.module.weight 
             else:
-                self.weight_inject = self.noise_norm * self.module.weight 
+                self.weight_inject = self.noise_norm * self.noise_norm_ex * self.module.weight 
 
         # TODO: bias
+
+    def get_param_norm(self, *args, **kwargs):
+        if self.module_init is not None:
+            utils.log("module_init is not None")
+            return (self.module.weight - self.module_init.weight).abs().mean()
+        else:
+            # return self.module.weight.abs().mean()
+            # return self.module.weight.norm() / math.sqrt(torch.numel(self.module.weight))
+            return torch.numel(self.module.weight)
 
     def forward(self, x):
 

@@ -91,6 +91,8 @@ class SimpleModel(LightningModule):
         
         self.accuracy = lambda p, y: (p == y).float().mean()
         self.accuracy_seen = lambda p, y, o: ((torch.logical_and(p == y, o == 0)).float().sum() / (o == 0).float().sum()) if ((o == 0).float().sum() > 0) else None
+        self.val_acc_seen = 0
+        self.val_acc_seen_count = 0
 
         # TODO: Check which one fits the task better
         # self.uncertainty_auroc = AUROC(task="binary")
@@ -104,8 +106,38 @@ class SimpleModel(LightningModule):
         self.net_init = copy.deepcopy(self.net)
         self.head_init = copy.deepcopy(self.head)
 
+        self.try_load_ckpt(args.load_ckpt, args.load_ckpt_init)
+
         print("Model initialized")
         print(self)
+
+    def filter_rename_ckpt(self, state_dict, prefix):
+        filtered_dict = {}
+        for k in state_dict:
+            if k.startswith("%s." % prefix):
+                filtered_dict[k.replace("%s." % prefix, "", 1)] = state_dict[k]
+        return filtered_dict
+
+    def try_load_ckpt(self, path, path_init):
+        
+        if path == None:
+            return
+
+        loaded = torch.load(path)["state_dict"]
+        self.net.load_state_dict(self.filter_rename_ckpt(loaded, "net"))
+        self.head.load_state_dict(self.filter_rename_ckpt(loaded, "head"))
+
+        if path_init == None:
+            self.net_init.load_state_dict(self.filter_rename_ckpt(loaded, "net_init"))
+            self.head_init.load_state_dict(self.filter_rename_ckpt(loaded, "head_init"))
+            return
+
+        loaded = torch.load(path_init)["state_dict"]
+        self.net_init.load_state_dict(self.filter_rename_ckpt(loaded, "net"))
+        self.head_init.load_state_dict(self.filter_rename_ckpt(loaded, "head"))
+
+        # breakpoint()
+        return
         
     def forward(self, x):
 
@@ -169,6 +201,9 @@ class SimpleModel(LightningModule):
         acc = self.accuracy(preds, y)
         acc_seen = self.accuracy_seen(preds, y, o)
 
+        self.val_acc_seen += acc_seen
+        self.val_acc_seen_count += 1
+
         if not self.visualized:
             self.visualized = True
             self.logger.log_image(
@@ -194,6 +229,13 @@ class SimpleModel(LightningModule):
             self.log("val_acc_seen", acc_seen, prog_bar=True)
         
         return loss
+
+    def get_val_acc_seen(self):
+        
+        if(self.val_acc_seen_count <= 0):
+            return 0
+
+        return self.val_acc_seen / self.val_acc_seen_count
 
     def on_validation_epoch_end(self):
         self.val_uncertainty_scores = torch.cat(self.val_uncertainty_scores, dim = 0)
@@ -244,6 +286,9 @@ class SimpleModel(LightningModule):
 
         self.val_uncertainty_scores = []
         self.val_uncertainty_labels = []
+
+        self.val_acc_seen = 0
+        self.val_acc_seen_count = 0
 
     def test_step(self, batch, batch_idx):
         # Here we just reuse the validation_step for testing
