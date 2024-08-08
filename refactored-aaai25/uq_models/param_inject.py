@@ -85,7 +85,8 @@ def InjectNet(
             raw_param_norm = param_norm
             # param_norm = 1 / param_norm
             # param_norm = param_norm / param_norm.max()
-            layer_norms = param_norm * perturb_max
+            # layer_norms = param_norm * perturb_max
+            layer_norms = 1 / torch.sqrt(param_norm) * perturb_max
 
             utils.log("Adaptive Layer-wise scaling info")
             utils.log("%5s %12s %12s" % ("No.", "param_norm", "perturb_norm"))
@@ -271,7 +272,8 @@ class Linear_ParameterInjector(ParameterInjector):
             return (self.module.weight - self.module_init.weight).abs().mean()
         else:
             # return self.module.weight.abs().mean()
-            return self.module.weight.norm() / math.sqrt(torch.numel(self.module.weight))
+            # return self.module.weight.norm() / math.sqrt(torch.numel(self.module.weight))
+            return torch.numel(self.module.weight)
 
     def forward(self, x):
 

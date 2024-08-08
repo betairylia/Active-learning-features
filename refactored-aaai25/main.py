@@ -107,7 +107,8 @@ def main(hparams):
     model = uq.models_dict[hparams.model](hparams, dm_header, loss, metrics, ref_data)
 
     # Checkpointing
-    checkpoint_callback = InitialCheckpointsCallback(
+    # checkpoint_callback = InitialCheckpointsCallback(
+    checkpoint_callback = ModelCheckpoint(
         dirpath  = "checkpoints/%s" % hparams.ckpt_path,
         filename = "{epoch:04d}-{val_acc_seen:.2f}",
         every_n_epochs = hparams.ckpt_interval,
