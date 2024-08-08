@@ -1,6 +1,8 @@
 import torch
 from torch.nn import functional as F
 from .base import SimpleModel
+import seaborn as sns
+from matplotlib import pyplot as plt
 
 from .param_inject import *
 
@@ -26,8 +28,22 @@ class InjectTest(SimpleModel):
         )
 
         self.combined_net_init = nn.Sequential(self.net_init, self.head_init)
+        # self.check_net()
 
         # breakpoint()
+
+    def check_net(self):
+        
+        def log(n, m):
+            print(n)
+            if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
+                fig, ax = plt.subplots()
+                sns.histplot(data = m.weight.detach().cpu().flatten(), bins = 64)
+                wandb.log({"Weights of %s" % n: wandb.Image(fig)})
+                plt.close('all')
+
+        for n, m in self.combined_net.named_modules():
+            log(n, m)
 
     def get_predictions(self, x, times = -1):
 
@@ -180,7 +196,7 @@ class InjectTest_IndepDet(InjectTest):
 
             if self.mode == "pure-fluctuation":
 
-                det_diff = logits_det - logits_original
+                det_diff = torch.abs(logits_det - logits_original)
                 ub = logits.std(dim = 0) - self.lambda_det * det_diff.squeeze()
                 print("noise %f | det %f" % (logits.std(dim = 0).mean(), torch.abs(det_diff).mean()))
 
@@ -191,7 +207,7 @@ class InjectTest_IndepDet(InjectTest):
 
                 return logits.mean(dim = 0), upperbound_sum
 
-            elif self.mode == "posterior":
+            elif self.mode == "posterior-old":
 
                 logits_diff = logits - logits_original
                 
@@ -204,6 +220,43 @@ class InjectTest_IndepDet(InjectTest):
                 logits_scaled_diff = logits_diff * torch.exp(self.mul_temp * (logits_scale + self.add_temp))
                 # print("Actual logits scale: %s" % repr(logits_scaled_diff / logits_diff))
                 logits_new = logits_original + logits_scaled_diff
+                probs_new = F.softmax(logits_new, dim = -1)
+
+                model_prediction = probs_new.mean(0)
+                entropy = -torch.sum(model_prediction * torch.log(model_prediction + 1e-8), dim = 1)
+                uncertainty = entropy
+
+                return logits_new.mean(dim = 0), uncertainty
+
+            elif self.mode == "posterior":
+
+                logits_diff = logits - logits_original
+                Ozz_estim = logits_diff.var(dim = 0)
+
+                det_diff = torch.abs(logits_det - logits_original)
+                Ozx_estim = self.lambda_det * det_diff.squeeze()
+
+                # UB_estim = torch.exp(
+                #         self.mul_temp * 
+                #         (torch.maximum(1e-8 * torch.ones_like(Ozz_estim), 1 + Ozz_estim - 2 * Ozx_estim)) ** 0.5\
+                #     + self.add_temp)
+
+                UB_estim = (
+                        self.mul_temp * 
+                        (torch.maximum(1e-8 * torch.ones_like(Ozz_estim), 1 + Ozz_estim - 2 * Ozx_estim)) ** 0.5\
+                    + self.add_temp)
+                # [batch_size, output_dim]
+
+                UB_estim = UB_estim.unsqueeze(0)
+                # [1, batch_size, output_dim]
+
+                print(Ozz_estim.mean())
+                print(Ozx_estim.mean())
+                print(UB_estim)
+                print(logits_original)
+
+                r = torch.bernoulli(torch.ones_like(logits) * 0.5) * 2 - 1
+                logits_new = logits_original + UB_estim * r
                 probs_new = F.softmax(logits_new, dim = -1)
 
                 model_prediction = probs_new.mean(0)
