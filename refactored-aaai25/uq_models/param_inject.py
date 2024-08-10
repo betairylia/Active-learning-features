@@ -81,7 +81,7 @@ def InjectNet(
             raise
 
         elif perturb_adaptive == 'layerwise':
-            param_norm = torch.Tensor([l.get_param_norm() for l in layers])
+            param_norm = torch.Tensor([l.get_param_num() for l in layers])
             raw_param_norm = param_norm
             # param_norm = 1 / param_norm
             # param_norm = param_norm / param_norm.max()
@@ -89,8 +89,8 @@ def InjectNet(
             layer_norms = 1 / torch.sqrt(param_norm) * perturb_max
 
             utils.log("Adaptive Layer-wise scaling info")
-            utils.log("%5s %12s %12s" % ("No.", "param_norm", "perturb_norm"))
-            utils.log("\n".join(["%5d %12.7f %12.7f" % (i, p, l) for i, (l, p) in enumerate(zip(layer_norms, raw_param_norm))]))
+            utils.log("%5s %12s %12s" % ("No.", "#params", "perturb_norm"))
+            utils.log("\n".join(["%5d %12d %12.7f" % (i, p, l) for i, (l, p) in enumerate(zip(layer_norms, raw_param_norm))]))
 
         elif perturb_adaptive == 'netwise':
 
@@ -173,6 +173,9 @@ class ParameterInjector(nn.Module):
     def sample(self, *args, **kwargs):
         pass
     
+    def get_param_num(self, *args, **kwargs):
+        return 0
+
     def get_param_norm(self, *args, **kwargs):
         return 0
 
@@ -255,7 +258,13 @@ class Linear_ParameterInjector(ParameterInjector):
             self.weight_inject = self.noise_norm * self.weight_inject * self.module.weight
 
         elif self.noise_pattern == 'subtract':
-            self.weight_inject = (self.noise_norm - self.noise_norm * self.noise_norm_ex * torch.abs(self.module.weight)) * self.weight_inject
+            self.weight_inject = (\
+                torch.maximum(\
+                    self.noise_norm -
+                    self.noise_norm * self.noise_norm_ex * torch.abs(self.module.weight),\
+                    torch.zeros_like(self.weight_inject)\
+                )\
+            ) * self.weight_inject
 
         elif self.noise_pattern == 'prop-deterministic':
             if self.module_init is not None:
@@ -266,14 +275,17 @@ class Linear_ParameterInjector(ParameterInjector):
 
         # TODO: bias
 
+    def get_param_num(self, *args, **kwargs):
+        return torch.numel(self.module.weight)
+
     def get_param_norm(self, *args, **kwargs):
         if self.module_init is not None:
             utils.log("module_init is not None")
             return (self.module.weight - self.module_init.weight).abs().mean()
         else:
             # return self.module.weight.abs().mean()
-            # return self.module.weight.norm() / math.sqrt(torch.numel(self.module.weight))
-            return torch.numel(self.module.weight)
+            return self.module.weight.norm() / math.sqrt(torch.numel(self.module.weight))
+            # return torch.numel(self.module.weight)
 
     def forward(self, x):
 

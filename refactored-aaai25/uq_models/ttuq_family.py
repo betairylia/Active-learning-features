@@ -32,6 +32,7 @@ class TTUQBase(SimpleModel):
             perturb_max = self.perturb_max,
             noise_pattern = self.noise_pattern,
             perturb_adaptive = self.scaling,
+            noise_norm_ex = self.delta 
         )
 
     def get_predictions(self, x, times = -1):
@@ -186,20 +187,28 @@ class TTUQCompletePosterior(TTUQComplete):
         ########################################################
 
         logit_differences = lp - l
-        logit_differences =\
-            torch.sign(logit_differences) *\
-            torch.maximum(
-                torch.abs(logit_differences) -
-                gpp[None, :, None] * self.lambd,
-                torch.zeros_like(logit_differences)
-            )
+
+        sqrt_Ozz = torch.sqrt(Ozz)
+        sqrt_ub = torch.sqrt(torch.maximum(Ozz - self.lambd * gpp, torch.zeros_like(Ozz)))
+        scale_gamma = sqrt_ub / sqrt_Ozz
+
+        # logit_differences =\
+        #     torch.sign(logit_differences) *\
+        #     torch.maximum(
+        #         torch.abs(logit_differences) -
+        #         gpp[None, :, None] * self.lambd,
+        #         torch.zeros_like(logit_differences)
+        #     )
+        logit_differences = scale_gamma[None, :, None] * logit_differences
+
         new_lp = l + logit_differences
         self.ref_l = new_lp
 
         self.log("logit_diff value", (lp - l).abs().mean())
         self.log("gpp value (scaled)", (gpp * self.lambd).mean())
+        self.log("logit_scale gamma", scale_gamma.mean())
 
-        return self.entropy(self.ref_l) + ub
+        return self.entropy(self.ref_l)# + ub
 
         # Code below this line has no effect but I'm too lazy to comment them out
 
