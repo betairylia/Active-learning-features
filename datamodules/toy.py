@@ -10,7 +10,7 @@ margin = 1
 
 def get_Y(x, noise = 0):
     noise_vec = np.random.normal(scale = noise, size = x.shape)
-    return np.sin(3 * x) + noise_vec
+    return np.sin(3 * x) + 0.05 * np.sin(30 * x) + noise_vec
 
 def get_train_X(N = 1024):
     return np.concatenate([np.random.rand(N,) * width - (margin + width),

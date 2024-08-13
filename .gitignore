@@ -157,3 +157,10 @@ None/
 *.ckpt
 data
 **/data
+*.mplstyle
+*.pdf
+*.tex
+*.png
+*.jpg
+*.jpeg
+

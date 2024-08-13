@@ -2,6 +2,7 @@
 
 import torch
 from lightning import LightningModule, LightningDataModule, Trainer
+# from sklearn.datasets import make_moons
 
 import numpy as np
 
@@ -10,7 +11,7 @@ margin = 1
 
 def get_Y(x, noise = 0):
     noise_vec = np.random.normal(scale = noise, size = x.shape)
-    return np.sin(3 * x) + noise_vec
+    return np.sin(1.4 * x) + 0.1 * np.sin(10 * x) + noise_vec
 
 def get_train_X(N = 1024):
     return np.concatenate([np.random.rand(N,) * width - (margin + width),
@@ -51,3 +52,11 @@ class RegressionToyDatasetDataModule(LightningDataModule):
     def test_dataloader(self):
         return self.val_dataloader()
 
+# class ClassificationToyDatasetDataModule(LightningDataModule):
+
+#     def __init__(self):
+#         super().__init__()
+
+#     def setup(self, stage = None):
+
+#         X, y = make_moons(n_samples = 2048)
