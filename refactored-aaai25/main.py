@@ -53,12 +53,17 @@ class InitialCheckpointsCallback(ModelCheckpoint):
 
     def on_train_start(self, trainer, pl_module):
         super().on_train_start(trainer, pl_module)
-        self.save_checkpoint(trainer)
+        monitor_candidates = self._monitor_candidates(trainer)
+        trainer.save_checkpoint(self.format_checkpoint_name(monitor_candidates))
 
     def on_validation_end(self, trainer, pl_module):
         super().on_validation_end(trainer, pl_module)
         if(trainer.current_epoch + 1) < 10:
-            self.save_checkpoint(trainer)
+            monitor_candidates = self._monitor_candidates(trainer)
+            trainer.save_checkpoint(self.format_checkpoint_name(monitor_candidates))
+            # self._save_last_checkpoint(trainer, monitor_candidates)
+            # trainer.save_checkpoint()
+            # self.save_checkpoint(trainer)
 
 ###################################################################################
 # MAIN and ARGS
@@ -107,8 +112,8 @@ def main(hparams):
     model = uq.models_dict[hparams.model](hparams, dm_header, loss, metrics, ref_data)
 
     # Checkpointing
-    # checkpoint_callback = InitialCheckpointsCallback(
-    checkpoint_callback = ModelCheckpoint(
+    checkpoint_callback = InitialCheckpointsCallback(
+    # checkpoint_callback = ModelCheckpoint(
         dirpath  = "checkpoints/%s" % hparams.ckpt_path,
         filename = "{epoch:04d}-{val_acc_seen:.2f}",
         every_n_epochs = hparams.ckpt_interval,

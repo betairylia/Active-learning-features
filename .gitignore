@@ -163,4 +163,7 @@ data
 *.png
 *.jpg
 *.jpeg
+*.npy
+**/openood/
+**/openood
 

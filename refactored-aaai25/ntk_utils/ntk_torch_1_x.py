@@ -48,6 +48,9 @@ class NTKHelper():
 
         def foo(params, x):
             result = self.fnet(params, self.fbuffer, x.unsqueeze(0)).squeeze(0)
+            if isinstance(self.outdim, torch.Tensor):
+                self.outdim = self.outdim.to(result.device)
+                return result[self.outdim]
             if self.outdim < 0:
                 return result
             else:
@@ -159,18 +162,20 @@ class NTKHelper():
                                                 #          => output is [2, 10, 64, 64, 3, 3]
         jac1 = self.filter_param_tuples(jac1)
         jac1 = [j.flatten(2) for j in jac1]     # Converts to [bs, dim_o, Nparams]
-
+        jac1 = [j / math.sqrt(j.shape[2]) for j in jac1] # Layer-wise scaling
+ 
         # Jacobian for x2
         jac2 = vmap(self.jac(self.fnet_single), (None, 0))(self.fparams, x2)
         jac2 = self.filter_param_tuples(jac2)
         jac2 = [j.flatten(2) for j in jac2]
+        jac2 = [j / math.sqrt(j.shape[2]) for j in jac2] # Layer-wise scaling
 
         # Compute J(x1) @ J(x2).T
 
         einsum_expr_param = ''
         einsum_expr_lhs_param = ('a', 'a')
 
-        if mode == 'full':
+        if mode == 'full' or mode == 'frobenius':
             einsum_expr_param = 'ab'
             einsum_expr_lhs_param = ('a', 'b')
         elif mode == 'trace':
@@ -201,6 +206,9 @@ class NTKHelper():
         )
 
         result = torch.stack([torch.einsum(einsum_expr, j1, j2) for j1, j2 in zip(jac1, jac2)])
-        result = result.sum(0) # TODO: Layer-wise scaling?
+        result = result.sum(0)
+
+        if mode == 'frobenius':
+            result = torch.norm(result, p = 'fro', dim = (-1, -2))
 
         return result.detach()
