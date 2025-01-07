@@ -92,7 +92,10 @@ class NTKHelper():
         mode = 'trace', batch_mode = 'pairwise', 
         NTK_batchsize = 4,
         x1_map = lambda x : x,
-        x2_map = lambda x : x):
+        x2_map = lambda x : x,
+        x1_scaling = lambda jac: [j / math.sqrt(j.shape[2]) for j in jac],
+        x2_scaling = lambda jac: [j / math.sqrt(j.shape[2]) for j in jac]
+    ):
 
         # TODO: Support partial batches
         # assert len(x1) % NTK_batchsize == 0 and len(x2) % NTK_batchsize == 0
@@ -119,7 +122,9 @@ class NTKHelper():
                             x1_map(bx1),
                             x2_map(bx2),
                             mode,
-                            batch_mode
+                            batch_mode,
+                            x1_scaling = x1_scaling,
+                            x2_scaling = x2_scaling
                         )
                     )
                 row_result = torch.cat(row_result, dim = 1)
@@ -137,7 +142,9 @@ class NTKHelper():
                         x1_map(bx1),
                         x2_map(bx2),
                         mode,
-                        batch_mode
+                        batch_mode,
+                        x1_scaling = x1_scaling,
+                        x2_scaling = x2_scaling
                     )
                 )
             result = torch.cat(result)
@@ -146,7 +153,11 @@ class NTKHelper():
 
     # TODO: Filter buffers?
     # Same as above function but don't split to smaller batches
-    def compute_ntk_eval_batch(self, x1, x2, mode = 'trace', batch_mode = 'pairwise'):
+    def compute_ntk_eval_batch(
+        self, x1, x2, mode = 'trace', batch_mode = 'pairwise',
+        x1_scaling = lambda jac: [j / math.sqrt(j.shape[2]) for j in jac], # Layer-wise scaling
+        x2_scaling = lambda jac: [j / math.sqrt(j.shape[2]) for j in jac]
+    ):
 
         x1 = x1.to(self.fparams[0].device)
         x2 = x2.to(self.fparams[0].device)
@@ -162,13 +173,13 @@ class NTKHelper():
                                                 #          => output is [2, 10, 64, 64, 3, 3]
         jac1 = self.filter_param_tuples(jac1)
         jac1 = [j.flatten(2) for j in jac1]     # Converts to [bs, dim_o, Nparams]
-        jac1 = [j / math.sqrt(j.shape[2]) for j in jac1] # Layer-wise scaling
+        jac1 = x1_scaling(jac1)
  
         # Jacobian for x2
         jac2 = vmap(self.jac(self.fnet_single), (None, 0))(self.fparams, x2)
         jac2 = self.filter_param_tuples(jac2)
         jac2 = [j.flatten(2) for j in jac2]
-        jac2 = [j / math.sqrt(j.shape[2]) for j in jac2] # Layer-wise scaling
+        jac2 = x2_scaling(jac2)
 
         # Compute J(x1) @ J(x2).T
 
